@@ -1,0 +1,11 @@
+{
+  "name": "tergene-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@adiwajshing/baileys": "^4.0.0",
+    "openrouter-node": "^1.0.0",
+    "pino": "^8.0.0",
+    "micro": "^9.3.4"
+  }
+}
