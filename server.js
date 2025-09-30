@@ -65,10 +65,10 @@ const storage = multer.diskStorage({
   }
 });
 
-// limit 700 MB
+// limit 5 GB
 const upload = multer({
   storage,
-  limits: { fileSize: 700 * 1024 * 1024 } // 700 MB
+  limits: { fileSize: 5368709120 } // 5 * 1024 * 1024 * 1024 = 5368709120 bytes
 });
 
 const app = express();
@@ -135,7 +135,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 // multer error handler (size limit etc.)
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'File too large. Max 700 MB allowed.' });
+    return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
   }
   // other multer errors
   if (err) {
