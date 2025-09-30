@@ -33,7 +33,7 @@ function saveMappings() {
   }
 }
 
-// helper: generate random 8-char token (alphanumeric)
+// helper: generate random 8-char token (alphanumeric uppercase)
 function genToken(len = 8) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let t = '';
@@ -44,7 +44,7 @@ function genToken(len = 8) {
 function genUniqueToken() {
   let t = genToken(8);
   let tries = 0;
-  while (mappings[t] && tries < 10) {
+  while (mappings[t] && tries < 50) {
     t = genToken(8);
     tries++;
   }
@@ -55,11 +55,22 @@ function genUniqueToken() {
   return t;
 }
 
+// sanitize a filename to be URL-safe & filesystem-safe
+function safeFileName(name) {
+  // preserve extension, replace bad chars with _
+  const ext = path.extname(name);
+  const base = path.basename(name, ext);
+  // remove path separators, non-ascii, etc.
+  const safeBase = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '');
+  return (safeBase + safeExt) || 'file';
+}
+
 // multer storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = safeFileName(file.originalname);
     const filename = `${Date.now()}_${safeName}`;
     cb(null, filename);
   }
@@ -87,10 +98,13 @@ app.use('/files', express.static(UPLOAD_DIR, {
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const filename = req.file.filename;
+  const filename = req.file.filename; // actual stored filename on disk
+  const originalName = req.file.originalname;
+  const safeOriginal = safeFileName(originalName); // used in URL
   const info = {
-    filename,
-    originalName: req.file.originalname,
+    filename,            // stored name on disk
+    originalName,        // original upload name
+    safeOriginal,        // sanitized name used in public URL
     size: req.file.size,
     mime: req.file.mimetype,
     createdAt: new Date().toISOString()
@@ -98,20 +112,29 @@ app.post('/upload', upload.single('file'), (req, res) => {
 
   // generate token and map it
   const token = genUniqueToken();
+  // store under token
   mappings[token] = info;
   saveMappings();
 
-  // build share URL: /tf-<token>
-  const sharePath = `/TF-${token}`;
+  // build share URL: /TF-<TOKEN>/<safeOriginalName>
+  const sharePath = `/TF-${token}/${encodeURIComponent(info.safeOriginal)}`;
   const fileUrl = BASE_URL
     ? `${BASE_URL.replace(/\/+$/, '')}${sharePath}`
     : `${req.protocol}://${req.get('host')}${sharePath}`;
 
-  res.json({ filename, token, url: fileUrl });
+  // return helpful info including domain + path + filename
+  res.json({
+    filename: info.filename,
+    originalName: info.originalName,
+    token,
+    url: fileUrl,
+    sharePath
+  });
 });
 
-// Serve file by token: GET /tf-<token>
-app.get('/tf-:token', (req, res) => {
+// Serve file by token: GET /TF-:token OR GET /TF-:token/:name
+// Accepts both /TF-ABCDEFGH and /TF-ABCDEFGH/filename.ext
+app.get(['/TF-:token', '/TF-:token/:name'], (req, res) => {
   const token = req.params.token;
   const entry = mappings[token];
   if (!entry) return res.status(404).send('Not found');
@@ -119,8 +142,10 @@ app.get('/tf-:token', (req, res) => {
   const filePath = path.join(UPLOAD_DIR, entry.filename);
   if (!fs.existsSync(filePath)) return res.status(410).send('File removed');
 
-  // Serve file. For smaller files and cross-browser friendly behavior, use res.sendFile
-  // Let browser decide inline vs download by default.
+  // set Content-Disposition with original filename to suggest proper name on download
+  const suggestedName = entry.originalName || entry.safeOriginal || entry.filename;
+  res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g, '')}"`);
+
   res.sendFile(filePath, (err) => {
     if (err) {
       console.error('Error sending file', err);
