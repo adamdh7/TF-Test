@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="ht">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TF-Stream-Url</title>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="TF-Stream-Url" />
+  <!-- lokal icon (ranplase si ou gen yon lòt) -->
+  <link rel="apple-touch-icon" href="icon.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background-color: #f8fafc; margin: 0; }
+    .ad-layer { pointer-events: auto; z-index: 9999; } /* piblisite aktive */
+    #mainUI { position: relative; z-index: 10001; }
+    #ad-left, #ad-right { width: 90px; max-width: 120px; }
+    #ad-top, #ad-bottom { height: 90px; }
+    .ad-frame { display: block; }
+    .ad-layer iframe, .ad-layer > div { opacity: 0.98; }
+    .copied { color: #059669; font-weight: 600; }
+  </style>
+</head>
+<body class="relative">
+  <div id="mainUI" class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl shadow-xl p-6 space-y-5">
+      <h2 class="text-xl font-bold text-center text-gray-800">TF-Stream-Url</h2>
+
+      <input id="fileInput" type="file" accept="*/*" class="block w-full text-sm text-gray-700 bg-gray-100 rounded-xl border border-gray-300 p-2 cursor-pointer" />
+
+      <div class="flex gap-2">
+        <button id="uploadBtn" class="flex-1 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-xl transition">Upload</button>
+        <button id="cancelBtn" class="w-24 bg-gray-200 text-gray-700 font-semibold py-2 rounded-xl hidden">Cancel</button>
+      </div>
+
+      <div id="result" class="text-center text-sm text-gray-700"></div>
+
+      <div id="progressWrap" class="mt-2 hidden">
+        <div class="text-xs text-gray-600 mb-1">Pwogrè upload</div>
+        <div class="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+          <div id="progressFill" style="width:0%" class="h-3 rounded-full transition-all bg-blue-500"></div>
+        </div>
+        <div class="flex justify-between items-center mt-2 text-xs">
+          <div id="progressPct" class="font-mono text-sm">0%</div>
+          <div id="progressInfo" class="text-gray-500 text-xs"></div>
+        </div>
+      </div>
+
+      <div id="preview" class="mt-4 text-center hidden">
+        <p class="font-semibold text-gray-800 mb-2">Upload Siksè:</p>
+        <img id="previewImg" class="mx-auto rounded-lg shadow max-h-60 hidden" />
+        <video id="previewVid" class="mx-auto rounded-lg shadow max-h-60 hidden" controls></video>
+        <div id="rawWrapper" class="mt-2"></div>
+        <p class="mt-2 break-all text-blue-600 text-xs" id="urlOutput" style="cursor:pointer"></p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ad-layer placeholders (ads aktyèl la ap ranpli yo ak script anba a) -->
+  <div id="ad-top" class="ad-layer fixed top-0 left-0 w-full flex justify-center items-start"></div>
+  <div id="ad-left" class="ad-layer fixed top-1/4 left-0 h-1/2 flex items-center"></div>
+  <div id="ad-right" class="ad-layer fixed top-1/4 right-0 h-1/2 flex items-center"></div>
+  <div id="ad-bottom" class="ad-layer fixed bottom-0 left-0 w-full flex justify-center items-end"></div>
+
+  <script>
+    // UI elements
+    const uploadBtn = document.getElementById('uploadBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const fileInput = document.getElementById('fileInput');
+    const result = document.getElementById('result');
+    const preview = document.getElementById('preview');
+    const previewImg = document.getElementById('previewImg');
+    const previewVid = document.getElementById('previewVid');
+    const rawWrapper = document.getElementById('rawWrapper');
+    const urlOutput = document.getElementById('urlOutput');
+
+    const progressWrap = document.getElementById('progressWrap');
+    const progressFill = document.getElementById('progressFill');
+    const progressPct = document.getElementById('progressPct');
+    const progressInfo = document.getElementById('progressInfo');
+
+    let currentXhr = null;
+    let startTime = 0;
+
+    fileInput.setAttribute('accept', '*/*');
+
+    uploadBtn.addEventListener('click', uploadFile);
+    cancelBtn.addEventListener('click', () => {
+      if (currentXhr) currentXhr.abort();
+    });
+
+    function humanFileSize(bytes) {
+      const thresh = 1024;
+      if (Math.abs(bytes) < thresh) return bytes + ' B';
+      const units = ['KB','MB','GB','TB','PB','EB','ZB','YB'];
+      let u = -1;
+      do {
+        bytes /= thresh;
+        ++u;
+      } while(Math.abs(bytes) >= thresh && u < units.length - 1);
+      return bytes.toFixed(1)+' '+units[u];
+    }
+
+    function resetUI() {
+      progressFill.style.width = '0%';
+      progressPct.textContent = '0%';
+      progressInfo.textContent = '';
+      progressWrap.classList.add('hidden');
+      cancelBtn.classList.add('hidden');
+      uploadBtn.disabled = false;
+    }
+
+    function detectResourceType(file) {
+      if (!file || !file.type) return 'raw';
+      const t = file.type.toLowerCase();
+      if (t.startsWith('image/')) return 'image';
+      if (t.startsWith('video/') || t.startsWith('audio/')) return 'video';
+      return 'raw';
+    }
+
+    function escapeHtml(unsafe) {
+      return String(unsafe)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    async function uploadFile() {
+      const file = fileInput.files[0];
+      if (!file) {
+        return alert('Tanpri chwazi yon fichye anvan ou upload.');
+      }
+
+      result.textContent = " Nap prepare upload...";
+      preview.classList.add("hidden");
+      rawWrapper.innerHTML = '';
+      progressWrap.classList.remove('hidden');
+      cancelBtn.classList.remove('hidden');
+      uploadBtn.disabled = true;
+      startTime = Date.now();
+
+      // endpoint uses local server /upload (see server.js)
+      const endpoint = `/upload`;
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      currentXhr = xhr;
+
+      xhr.open("POST", endpoint);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          progressFill.style.width = percent + "%";
+          progressPct.textContent = percent + "%";
+
+          const elapsed = (Date.now() - startTime) / 1000;
+          const speed = e.loaded / Math.max(elapsed, 0.001);
+          const remainingBytes = e.total - e.loaded;
+          const secsLeft = remainingBytes / Math.max(speed, 1);
+          progressInfo.textContent = `${humanFileSize(e.loaded)} / ${humanFileSize(e.total)} • ${Math.round(secsLeft)}s left`;
+        }
+      };
+
+      xhr.onload = async () => {
+        currentXhr = null;
+        uploadBtn.disabled = false;
+        cancelBtn.classList.add('hidden');
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            const url = data.url || data.fileUrl || data.path;
+            if (url) {
+              result.textContent = "";
+              urlOutput.textContent = url;
+              urlOutput.onclick = () => window.open(url, "_blank");
+              preview.classList.remove("hidden");
+
+              const resourceType = detectResourceType(file);
+
+              if (resourceType === 'image') {
+                previewImg.src = url;
+                previewImg.classList.remove("hidden");
+                previewVid.classList.add("hidden");
+                rawWrapper.innerHTML = '';
+              } else if (resourceType === 'video') {
+                previewVid.src = url;
+                previewVid.classList.remove("hidden");
+                previewImg.classList.add("hidden");
+                rawWrapper.innerHTML = '';
+              } else {
+                previewImg.classList.add("hidden");
+                previewVid.classList.add("hidden");
+                const rawHtml = `
+  <div style="
+    padding:12px;
+    border-radius:10px;
+    background:#f3f4f6;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    min-width:160px;
+    max-width:320px;
+    gap:8px;
+  ">
+    <div style="
+      font-weight:600;
+      font-size:14px;
+      color:#0f172a;
+      max-width:100%;
+      overflow:hidden;
+      white-space:nowrap;
+      text-overflow:ellipsis;
+    ">
+      ${escapeHtml(file.name)}
+    </div>
+    <a href="${url}" target="_blank" class="ml-2 text-blue-600 text-xs">Open</a>
+  </div>
+`;
+                rawWrapper.innerHTML = rawHtml;
+              }
+
+              progressFill.style.width = '100%';
+              progressPct.textContent = '100%';
+              progressInfo.textContent = `${humanFileSize(file.size)} • Konplete`;
+
+              try {
+                await navigator.clipboard.writeText(url);
+                result.innerHTML = '<span class="copied">URL kopi nan clipboard</span>';
+                setTimeout(()=> result.textContent = '', 2500);
+              } catch (err) {
+                result.textContent = 'Upload konplete — klike URL la pou kopi.';
+              }
+
+            } else {
+              result.textContent = " Erè: repons upload pa gen URL.";
+              resetUI();
+            }
+          } catch (err) {
+            result.textContent = "Erè nan repons sèvè: " + err.message;
+            resetUI();
+          }
+        } else {
+          result.textContent = `Erè HTTP: ${xhr.status}`;
+          resetUI();
+        }
+      };
+
+      xhr.onerror = () => {
+        currentXhr = null;
+        result.textContent = "Erè rezo pandan upload.";
+        resetUI();
+      };
+
+      xhr.onabort = () => {
+        currentXhr = null;
+        result.textContent = "Upload anile.";
+        resetUI();
+      };
+
+      try {
+        xhr.send(formData);
+        result.textContent = "Upload ap kòmanse...";
+      } catch (err) {
+        result.textContent = " Erè: " + err.message;
+        resetUI();
+      }
+    }
+
+    urlOutput.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      const text = urlOutput.textContent.trim();
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        result.textContent = 'URL kopi nan clipboard.';
+        setTimeout(()=> result.textContent = '', 2000);
+      } catch (e) {
+        result.textContent = 'Pa kapab kopiye URL la: ' + e.message;
+      }
+    });
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => {
+            console.log('Service worker registered.', reg);
+          })
+          .catch(err => {
+            console.warn('Service worker registration failed:', err);
+          });
+      });
+    }
+
+    // prevent weird auto-redirects coming from external click handlers
+    document.addEventListener('click', function(e) {
+      if (e.target.closest('.ad-layer') || e.target.closest('iframe')) {
+        return;
+      }
+      if (e.target.closest('#fileInput') || e.target.closest('#uploadBtn') || e.target.closest('#urlOutput') || e.target.closest('#cancelBtn')) {
+        return;
+      }
+    }, true);
+  </script>
+
+  <!-- Re-add your original ad scripts (kept from vèsyon ou te bay) -->
+  <script async="async" data-cfasync="false" src="//pantherinvincible.com/831d752652add5a4318102e95e23728b/invoke.js"></script>
+  <div id="container-831d752652add5a4318102e95e23728b" class="ad-layer fixed top-2 left-1"></div>
+  <script type="text/javascript" src="//pantherinvincible.com/97/a6/20/97a620f293cd665277c661660533234e.js"></script>
+  <script type="text/javascript" src="//pantherinvincible.com/8f/36/29/8f362929c71ab43f93c6d86c43889bfb.js"></script>
+  <script type="text/javascript">
+    atOptions = {
+      'key' : 'a948baf246dd1ff24f0a6fcde286b31b',
+      'format' : 'iframe',
+      'height' : 300,
+      'width' : 160,
+      'params' : {}
+    };
+  </script>
+  <script type="text/javascript" src="//pantherinvincible.com/a948baf246dd1ff24f0a6fcde286b31b/invoke.js"></script>
+
+</body>
+</html>
