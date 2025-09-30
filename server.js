@@ -35,7 +35,7 @@ function saveMappings() {
 
 // helper: generate random 8-char token (alphanumeric)
 function genToken(len = 8) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let t = '';
   for (let i = 0; i < len; i++) t += chars[Math.floor(Math.random() * chars.length)];
   return t;
@@ -102,7 +102,7 @@ app.post('/upload', upload.single('file'), (req, res) => {
   saveMappings();
 
   // build share URL: /tf-<token>
-  const sharePath = `/tf-${token}`;
+  const sharePath = `/TF-${token}`;
   const fileUrl = BASE_URL
     ? `${BASE_URL.replace(/\/+$/, '')}${sharePath}`
     : `${req.protocol}://${req.get('host')}${sharePath}`;
