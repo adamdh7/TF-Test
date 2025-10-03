@@ -1,4 +1,4 @@
-// server.js (Postgres-enabled, with local fallback)
+// server.js (Postgres optional - safe dynamic require)
 require('dotenv').config();
 
 const express = require('express');
@@ -9,8 +9,6 @@ const cors = require('cors');
 
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-
-const { Pool } = require('pg');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
@@ -30,19 +28,24 @@ const s3Client = new S3Client({
   }
 });
 
-// Postgres pool (if configured)
+// Postgres pool (only if DATABASE_URL present AND pg is installed)
 let pool = null;
 if (process.env.DATABASE_URL) {
-  const cfg = {
-    connectionString: process.env.DATABASE_URL
-  };
-  if (process.env.DATABASE_SSL === 'true') {
-    cfg.ssl = { rejectUnauthorized: false };
+  try {
+    const { Pool } = require('pg'); // dynamic require inside try/catch
+    const cfg = { connectionString: process.env.DATABASE_URL };
+    if (process.env.DATABASE_SSL === 'true') {
+      cfg.ssl = { rejectUnauthorized: false };
+    }
+    pool = new Pool(cfg);
+    pool.on('error', (err) => {
+      console.error('Unexpected PG client error', err);
+    });
+    console.log('Postgres pool created (pg loaded).');
+  } catch (err) {
+    console.warn('pg module not available or failed to load. Continuing without DB. To enable DB install "pg" and set DATABASE_URL.', err.message || err.toString());
+    pool = null;
   }
-  pool = new Pool(cfg);
-  pool.on('error', (err) => {
-    console.error('Unexpected PG client error', err);
-  });
 }
 
 // ensure local upload dir exists
@@ -79,16 +82,13 @@ function saveMappingsToDisk() {
 // --- DB persistence functions (Postgres) ---
 async function loadMappingsFromDB() {
   if (!pool) {
-    console.log('No DATABASE_URL configured - skipping DB load');
+    console.log('No DB pool - skipping DB load');
     return {};
   }
   try {
     const res = await pool.query('SELECT token, data FROM uploads');
     const dbm = {};
-    res.rows.forEach(r => {
-      // r.data is JSONB; ensure it's an object
-      dbm[r.token] = r.data;
-    });
+    res.rows.forEach(r => { dbm[r.token] = r.data; });
     console.log('Loaded mappings from DB:', Object.keys(dbm).length);
     return dbm;
   } catch (err) {
@@ -129,7 +129,7 @@ async function loadMappingsFromS3() {
     });
     const text = await streamToString(res.Body);
     const s3Mappings = JSON.parse(text || '{}');
-    // merge: prefer local disk mappings (so manual edits or results since last S3 save stay)
+    // merge: prefer local/disk mappings (so manual edits or results since last S3 save stay)
     mappings = Object.assign({}, s3Mappings, mappings);
     console.log('Merged mappings from S3:', Object.keys(s3Mappings).length);
   } catch (err) {
@@ -194,7 +194,6 @@ loadMappingsFromDisk();
   // Persist local-only entries into DB (so future starts use DB as source)
   if (pool) {
     for (const [token, entry] of Object.entries(mappings)) {
-      // check if exists in DB result
       if (!dbm[token]) {
         try { await saveMappingToDB(token, entry); } catch (e) { /* ignore */ }
       }
