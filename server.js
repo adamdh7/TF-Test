@@ -1,4 +1,5 @@
-// server.js - corrected, robust Busboy import, chunked uploads, pending-disk fallback
+// server.js - multer-based /upload (fallback to disk if DB fails)
+// NOTE: This is a replacement that avoids Busboy constructor issues.
 require('dotenv').config();
 
 const express = require('express');
@@ -6,41 +7,22 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const compression = require('compression');
+const multer = require('multer');
 const { Pool } = require('pg');
 
-// ---- robust Busboy import (handles CJS/ESM shapes) ----
-let Busboy;
-try {
-  const maybe = require('busboy');
-  Busboy = (maybe && (maybe.Busboy || maybe.default)) || maybe;
-  if (typeof Busboy !== 'function') {
-    console.error('Busboy import unexpected shape:', Object.keys(maybe || {}), '->', Busboy);
-    Busboy = null;
-  }
-} catch (err) {
-  console.error('Failed to require busboy module:', err && err.message);
-  Busboy = null;
-}
-
-// ---- config from .env ----
 const PORT = process.env.PORT || 3000;
 const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const PENDING_DIR = path.join(UPLOAD_DIR, 'pending');
 
 const CHUNK_MAX_SIZE = Number(process.env.CHUNK_MAX_SIZE || 5 * 1024 * 1024); // 5MB
-const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024); // 5GB
+const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024); // 5GB (multer limit - BE CAREFUL)
 const RUN_MIGRATIONS_AUTOMATIC = (process.env.RUN_MIGRATIONS_AUTOMATIC || 'true').toLowerCase() === 'true';
-
 const PG_POOL_MAX = Number(process.env.PG_POOL_MAX || 2);
-const PG_CONN_TIMEOUT_MS = Number(process.env.PG_CONN_TIMEOUT_MS || 20000);
-const PG_IDLE_TIMEOUT_MS = Number(process.env.PG_IDLE_TIMEOUT_MS || 30000);
-const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000; // 30s
+const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000;
 
-// ensure directories
-try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); fs.mkdirSync(PENDING_DIR, { recursive: true }); } catch (e) {}
+try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); fs.mkdirSync(PENDING_DIR, { recursive: true }); } catch(e){}
 
-// ---- Postgres pool (single DATABASE_URL expected) ----
 if (!process.env.DATABASE_URL) {
   console.error('No DATABASE_URL set in environment. Exiting.');
   process.exit(1);
@@ -48,19 +30,16 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   max: PG_POOL_MAX,
-  idleTimeoutMillis: PG_IDLE_TIMEOUT_MS,
-  connectionTimeoutMillis: PG_CONN_TIMEOUT_MS,
   ...(process.env.DATABASE_SSL === 'true' ? { ssl: { rejectUnauthorized: false } } : {})
 });
 pool.on('error', (err) => console.error('Unexpected PG client error', err && err.message));
 
-// in-memory metadata and disk fallback
+// mappings disk load/save
 let mappings = {};
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
-      const txt = fs.readFileSync(UPLOAD_JSON, 'utf8');
-      mappings = JSON.parse(txt || '{}');
+      mappings = JSON.parse(fs.readFileSync(UPLOAD_JSON, 'utf8') || '{}');
       console.log('Loaded mappings from', UPLOAD_JSON, Object.keys(mappings).length);
     } else {
       mappings = {};
@@ -82,7 +61,6 @@ function saveMappingsToDisk() {
 }
 loadMappingsFromDisk();
 
-// helpers
 function genToken(len = 8) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let t = '';
@@ -97,28 +75,26 @@ function safeFileName(name) {
   return (safeBase + safeExt) || 'file';
 }
 
-// ---- DB migrations (uploads + file_chunks) ----
+// migrations
 async function runMigrations() {
   try {
-    const createUploads = `
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS uploads (
         token TEXT PRIMARY KEY,
         data JSONB NOT NULL,
         file_data BYTEA,
         created_at TIMESTAMPTZ DEFAULT now()
       );
-    `;
-    const createChunks = `
+    `);
+    await pool.query(`ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA;`);
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS file_chunks (
         token TEXT NOT NULL,
         seq INTEGER NOT NULL,
         chunk BYTEA NOT NULL,
         PRIMARY KEY (token, seq)
       );
-    `;
-    await pool.query(createUploads);
-    await pool.query(`ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA;`);
-    await pool.query(createChunks);
+    `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_chunks_token ON file_chunks(token);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);`);
     console.log('DB migrations applied (uploads + file_chunks).');
@@ -128,13 +104,14 @@ async function runMigrations() {
   }
 }
 
-// ---- DB helpers ----
+// DB helpers
 async function saveChunkToDB(token, seq, buffer) {
   const q = `INSERT INTO file_chunks (token, seq, chunk) VALUES ($1,$2,$3)`;
   await pool.query(q, [token, seq, buffer]);
 }
 async function saveMappingMetadataToDB(token, entry) {
-  const q = `INSERT INTO uploads (token, data, created_at) VALUES ($1, $2::jsonb, NOW()) ON CONFLICT (token) DO UPDATE SET data = $2::jsonb, created_at = NOW();`;
+  const q = `INSERT INTO uploads (token, data, created_at) VALUES ($1, $2::jsonb, NOW())
+             ON CONFLICT (token) DO UPDATE SET data = $2::jsonb, created_at = NOW();`;
   await pool.query(q, [token, JSON.stringify(entry)]);
 }
 async function fetchAllChunks(token) {
@@ -147,7 +124,7 @@ async function fetchUploadEntry(token) {
   return { data: r.rows[0].data, hasFile: r.rows[0].has_file };
 }
 
-// ---- pending-disk helpers ----
+// pending disk helpers
 function saveBufferToPending(token, entry, buffer) {
   const fn = `pending-${token}-${Date.now()}.bin`;
   const filePath = path.join(PENDING_DIR, fn);
@@ -164,14 +141,13 @@ async function attemptFlushPendingOne(fileBaseName) {
     if (!fs.existsSync(jsonPath) || !fs.existsSync(binPath)) return false;
     const meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
     const buffer = fs.readFileSync(binPath);
-    // slice buffer into CHUNK_MAX_SIZE pieces
     let seq = 0;
     for (let offset = 0; offset < buffer.length; offset += CHUNK_MAX_SIZE) {
       const piece = buffer.slice(offset, Math.min(offset + CHUNK_MAX_SIZE, buffer.length));
       await saveChunkToDB(meta.token, seq, piece);
       seq++;
     }
-    try { await saveMappingMetadataToDB(meta.token, meta.entry); } catch (e) { /* non-fatal */ }
+    try { await saveMappingMetadataToDB(meta.token, meta.entry); } catch (e) {}
     fs.unlinkSync(jsonPath); fs.unlinkSync(binPath);
     console.log('Pending flushed to DB for token', meta.token);
     return true;
@@ -180,7 +156,6 @@ async function attemptFlushPendingOne(fileBaseName) {
     return false;
   }
 }
-
 async function pendingRetryLoop() {
   try {
     const files = fs.readdirSync(PENDING_DIR).filter(n => !n.endsWith('.json'));
@@ -194,11 +169,11 @@ async function pendingRetryLoop() {
   }
 }
 
-// ---- startup: migrations + load mappings ----
+// startup
 (async () => {
   try {
     if (RUN_MIGRATIONS_AUTOMATIC) await runMigrations();
-    // attempt to load metadata from uploads table
+    // load metadata
     try {
       const r = await pool.query('SELECT token, data, created_at FROM uploads');
       (r.rows || []).forEach(row => {
@@ -210,202 +185,96 @@ async function pendingRetryLoop() {
     } catch (e) {
       console.warn('Could not load mappings from DB (ok if empty):', e && e.message);
     }
-    // start pending retry loop
     pendingRetryLoop();
   } catch (err) {
     console.error('Startup error:', err && err.message);
   }
 })();
 
-// ---- express app ----
 const app = express();
 app.use(cors());
 app.use(compression());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- /upload endpoint (streaming using Busboy) ----
-app.post('/upload', (req, res) => {
-  if (!Busboy) {
-    console.error('Busboy not available - cannot parse multipart/form-data');
-    return res.status(500).json({ error: 'Server missing required module busboy' });
-  }
+// ---------- MULTER setup ----------
+const multerStorage = multer.memoryStorage();
+const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZE } });
 
+// upload route (uses multer to parse multipart/form-data)
+app.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    const busboy = new Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
+    // create token & metadata
     const token = genToken(10);
-    mappings[token] = { token, originalName: null, safeOriginal: null, size: 0, mime: null, createdAt: new Date().toISOString(), storage: 'chunks_pending' };
-    saveMappingsToDisk();
+    const originalName = req.file.originalname || 'file';
+    const safeOriginal = safeFileName(originalName);
+    const entry = {
+      token,
+      originalName,
+      safeOriginal,
+      size: req.file.size,
+      mime: req.file.mimetype,
+      createdAt: new Date().toISOString(),
+      storage: 'db' // may be changed if fallback
+    };
 
-    let gotFile = false;
-    let seq = 0;
-    let accBuffers = [];
-    let accLen = 0;
-    let totalBytes = 0;
-    let originalName = null;
-    let mimeType = null;
-    let aborted = false;
-
-    function cleanupAndAbort(code = 500, msg = 'Upload aborted') {
-      aborted = true;
-      try { req.unpipe && req.unpipe(busboy); } catch (e) {}
-      try { busboy.removeAllListeners(); } catch (e) {}
-      return res.status(code).json({ error: msg });
-    }
-
-    async function flushAccumulator(finalFlush = false) {
-      if (accLen === 0) return;
-      const tmp = Buffer.concat(accBuffers, accLen);
-      let offset = 0;
-      while (tmp.length - offset >= CHUNK_MAX_SIZE) {
-        const piece = tmp.slice(offset, offset + CHUNK_MAX_SIZE);
+    // slice buffer into chunks and save to DB
+    const buf = req.file.buffer;
+    try {
+      let seq = 0;
+      for (let offset = 0; offset < buf.length; offset += CHUNK_MAX_SIZE) {
+        const piece = buf.slice(offset, Math.min(offset + CHUNK_MAX_SIZE, buf.length));
         await saveChunkToDB(token, seq, piece);
         seq++;
-        offset += CHUNK_MAX_SIZE;
       }
-      const remainder = tmp.slice(offset);
-      accBuffers = remainder.length ? [remainder] : [];
-      accLen = remainder.length;
-      if (finalFlush && accLen > 0) {
-        await saveChunkToDB(token, seq, Buffer.concat(accBuffers, accLen));
-        seq++;
-        accBuffers = [];
-        accLen = 0;
-      }
-    }
-
-    busboy.on('file', (fieldname, fileStream, filename, encoding, mimetype) => {
-      gotFile = true;
-      originalName = filename || 'file';
-      mimeType = mimetype || 'application/octet-stream';
-      mappings[token].originalName = originalName;
-      mappings[token].safeOriginal = safeFileName(originalName);
-      mappings[token].mime = mimeType;
+      // save metadata to uploads table
+      try { await saveMappingMetadataToDB(token, entry); } catch(e){ console.warn('saveMappingMetadataToDB failed', e && e.message); }
+      mappings[token] = entry;
       saveMappingsToDisk();
 
-      fileStream.on('data', (chunk) => {
-        fileStream.pause();
-        (async () => {
-          try {
-            accBuffers.push(chunk);
-            accLen += chunk.length;
-            totalBytes += chunk.length;
+      const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
+      const proto = protoHeader || req.protocol || 'https';
+      const host = req.get('host');
+      const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
+      const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+      const fileUrl = `${origin}${sharePath}`;
 
-            if (accLen >= CHUNK_MAX_SIZE) {
-              const tmp = Buffer.concat(accBuffers, accLen);
-              let offset = 0;
-              while (tmp.length - offset >= CHUNK_MAX_SIZE) {
-                const piece = tmp.slice(offset, offset + CHUNK_MAX_SIZE);
-                try {
-                  await saveChunkToDB(token, seq, piece);
-                } catch (err) {
-                  // DB error while inserting chunk -> fallback to saving remaining whole file to pending disk
-                  console.error('DB insert failed during streaming:', err && err.message);
-                  try {
-                    const remainder = tmp.slice(offset); // remainder not yet flushed
-                    // read rest of fileStream into buffer
-                    const restParts = [];
-                    for await (const more of fileStream) restParts.push(more);
-                    const allRemaining = Buffer.concat([remainder, ...restParts]);
-                    saveBufferToPending(token, mappings[token], Buffer.concat(accBuffers.length ? accBuffers : [], accLen));
-                    mappings[token].size = totalBytes;
-                    mappings[token].storage = 'pending_disk';
-                    saveMappingsToDisk();
-                    return cleanupAndAbort(200, 'Saved to disk pending due to DB error');
-                  } catch (diskErr) {
-                    console.error('Disk fallback during stream failed:', diskErr && diskErr.message);
-                    return cleanupAndAbort(500, 'Server error saving pending');
-                  }
-                }
-                seq++;
-                offset += CHUNK_MAX_SIZE;
-              }
-              const remainder = tmp.slice(offset);
-              accBuffers = remainder.length ? [remainder] : [];
-              accLen = remainder.length;
-            }
-            fileStream.resume();
-          } catch (err) {
-            console.error('Error while processing chunk stream:', err && err.message);
-            return cleanupAndAbort(500, 'Stream processing error');
-          }
-        })();
-      });
-
-      fileStream.on('end', async () => {
-        try {
-          await flushAccumulator(true);
-          mappings[token].size = totalBytes;
-          mappings[token].storage = 'chunks';
-          mappings[token].createdAt = new Date().toISOString();
-          saveMappingsToDisk();
-          try { await saveMappingMetadataToDB(token, mappings[token]); } catch (e) { /* non-fatal */ }
-
-          const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-          const proto = protoHeader || req.protocol || 'https';
-          const host = req.get('host');
-          const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-          const sharePath = `/TF-${token}/${encodeURIComponent(mappings[token].safeOriginal)}`;
-          const fileUrl = `${origin}${sharePath}`;
-
-          return res.json({ token, url: fileUrl, sharePath, info: mappings[token] });
-        } catch (err) {
-          console.error('Error finalizing upload:', err && err.message);
-          try {
-            const pending = accLen ? Buffer.concat(accBuffers, accLen) : Buffer.alloc(0);
-            saveBufferToPending(token, mappings[token], pending);
-            mappings[token].size = totalBytes;
-            mappings[token].storage = 'pending_disk';
-            saveMappingsToDisk();
-            const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-            const proto = protoHeader || req.protocol || 'https';
-            const host = req.get('host');
-            const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-            const sharePath = `/TF-${token}/${encodeURIComponent(mappings[token].safeOriginal)}`;
-            const fileUrl = `${origin}${sharePath}`;
-            return res.json({ token, url: fileUrl, sharePath, info: mappings[token], note: 'saved-locally-pending-db' });
-          } catch (diskErr) {
-            console.error('Disk fallback failed at finalize:', diskErr && diskErr.message);
-            return cleanupAndAbort(500, 'Failed saving file');
-          }
-        }
-      });
-
-      fileStream.on('error', (err) => {
-        console.error('fileStream error:', err && err.message);
-        return cleanupAndAbort(500, 'Stream error');
-      });
-    });
-
-    busboy.on('field', () => { /* ignore */ });
-
-    busboy.on('finish', () => {
-      if (!gotFile && !aborted) {
-        return res.status(400).json({ error: 'No file uploaded' });
+      return res.json({ token, url: fileUrl, sharePath, info: entry });
+    } catch (dbErr) {
+      console.error('Save to DB failed:', dbErr && dbErr.message);
+      // fallback: save full buffer to pending disk
+      try {
+        saveBufferToPending(token, entry, buf);
+        entry.storage = 'pending_disk';
+        mappings[token] = entry;
+        saveMappingsToDisk();
+        const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
+        const proto = protoHeader || req.protocol || 'https';
+        const host = req.get('host');
+        const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
+        const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+        const fileUrl = `${origin}${sharePath}`;
+        return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
+      } catch (diskErr) {
+        console.error('Disk fallback failed:', diskErr && diskErr.message);
+        return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
       }
-      // response handled already when file 'end' emitted
-    });
-
-    busboy.on('error', (err) => {
-      console.error('busboy error', err && err.message);
-      if (!aborted) return res.status(500).json({ error: 'Upload parsing error' });
-    });
-
-    req.pipe(busboy);
+    }
   } catch (err) {
-    console.error('/upload top-level error', err && err.message);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('Upload error', err && err.message);
+    return res.status(500).json({ error: 'Upload failed', details: err && err.message });
   }
 });
 
-// ---- Serve file: try DB chunks, then pending disk ----
+// serve file: try DB chunks then pending
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   try {
     const token = req.params.token;
     if (!token) return res.status(400).send('Bad token');
 
-    // try uploads table first for file_data
+    // try uploads table file_data
     try {
       const ent = await fetchUploadEntry(token);
       if (ent && ent.hasFile && ent.data) {
@@ -418,22 +287,18 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
           return res.send(buf);
         }
       }
-    } catch (e) {
-      console.warn('fetchUploadEntry error (non-fatal):', e && e.message);
-    }
+    } catch (e) { console.warn('fetchUploadEntry error (non-fatal):', e && e.message); }
 
     // try DB chunks
     try {
-      const chunks = await fetchAllChunks(token);
-      if (chunks && chunks.length) {
+      const rows = await fetchAllChunks(token);
+      if (rows && rows.length) {
         res.setHeader('Content-Type', (mappings[token] && mappings[token].mime) || 'application/octet-stream');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        for (const row of chunks) res.write(row.chunk);
+        for (const r of rows) res.write(r.chunk);
         return res.end();
       }
-    } catch (e) {
-      console.warn('fetchAllChunks error (non-fatal):', e && e.message);
-    }
+    } catch (e) { console.warn('fetchAllChunks error (non-fatal):', e && e.message); }
 
     // try pending disk
     try {
@@ -451,9 +316,9 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
               return fs.createReadStream(binPath).pipe(res);
             }
           }
-        } catch (e) { /* ignore per-file parse errors */ }
+        } catch(e){}
       }
-    } catch (e) { /* ignore overall pending dir errors */ }
+    } catch(e){}
 
     return res.status(404).send('Not found');
   } catch (err) {
@@ -462,7 +327,6 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   }
 });
 
-// ---- admin migrations endpoint (no key) ----
 app.post('/_admin/run-migrations', async (req, res) => {
   try {
     await runMigrations();
@@ -474,7 +338,6 @@ app.post('/_admin/run-migrations', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// global error
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Max: ' + MAX_FILE_SIZE });
   if (err) {
@@ -484,5 +347,7 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// start server
+// start pending retry loop
+pendingRetryLoop();
+
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
