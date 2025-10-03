@@ -1,5 +1,3 @@
-// server.js
-// Full-featured: DB (Postgres) + S3 optional + fast upload (local + async S3) + truncated display names + compression + cache
 require('dotenv').config();
 
 const express = require('express');
