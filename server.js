@@ -1,4 +1,4 @@
-// server.js — defensive + auto-migrate + skip-placeholder-S3
+// server.js — defensive, improved error handling, admin inspect endpoint
 require('dotenv').config();
 
 const express = require('express');
@@ -18,22 +18,21 @@ let BUCKET = process.env.S3_BUCKET || process.env.BUCKET || null;
 const S3_REGION = process.env.S3_REGION || null;
 const BASE_URL = process.env.BASE_URL || null;
 
-// Helper: detect obvious placeholder values and treat them as unset
+// utility: detect placeholder values
 function looksLikePlaceholder(val) {
   if (!val || typeof val !== 'string') return true;
   const low = val.toLowerCase();
-  return low.includes('your-') || low.includes('example') || low.includes('replace') || low.includes('yourbucket') || low.includes('s3.your-region');
+  return low.includes('your-') || low.includes('example') || low.includes('replace') || low.includes('yourbucket') || low.includes('s3.your-region') || low.includes('db_host');
 }
 
-// If BUCKET or S3_REGION look like placeholders, disable S3 usage
+// Disable S3 if placeholders present
 if (looksLikePlaceholder(BUCKET) || looksLikePlaceholder(S3_REGION) ||
-    looksLikePlaceholder(process.env.S3_ACCESS_KEY_ID) || looksLikePlaceholder(process.env.S3_SECRET_ACCESS_KEY)
-) {
-  console.warn('S3 config looks like placeholders or missing — S3 disabled. To enable, set real S3 env vars (S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY).');
+    looksLikePlaceholder(process.env.S3_ACCESS_KEY_ID) || looksLikePlaceholder(process.env.S3_SECRET_ACCESS_KEY)) {
+  console.warn('S3 config looks like placeholders or missing — S3 disabled. Set S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY to enable.');
   BUCKET = null;
 }
 
-// Create S3 client only if BUCKET configured
+// create S3 client only if BUCKET set
 let s3Client = null;
 if (BUCKET) {
   s3Client = new S3Client({
@@ -45,59 +44,51 @@ if (BUCKET) {
       secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
     }
   });
-  console.log('S3 client created for bucket', BUCKET);
+  console.log('S3 client created for bucket:', BUCKET);
 } else {
-  console.log('S3 client not created (no bucket configured)');
+  console.log('S3 disabled or not configured.');
 }
 
-// Postgres pool creation (defensive)
+// Postgres pool (dynamic require)
 let pool = null;
 if (process.env.DATABASE_URL && typeof process.env.DATABASE_URL === 'string' && process.env.DATABASE_URL.trim() !== '') {
   try {
-    const { Pool } = require('pg'); // dynamic require
+    // accept both 'postgresql://' and 'postgres://'
+    const { Pool } = require('pg');
     const cfg = { connectionString: process.env.DATABASE_URL };
     if (process.env.DATABASE_SSL === 'true' || process.env.DATABASE_SSL === '1') {
       cfg.ssl = { rejectUnauthorized: false };
     }
     pool = new Pool(cfg);
-    pool.on('error', (err) => {
-      console.error('Unexpected PG client error', err);
-    });
-
-    // Log masked DB URL (for debugging) — mask credentials
-    try {
-      const safe = process.env.DATABASE_URL.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:••••@');
-      console.log('Postgres pool created (pg loaded). DB URL:', safe);
-    } catch (e) {
-      console.log('Postgres pool created (pg loaded).');
-    }
+    pool.on('error', (err) => console.error('Unexpected PG client error', err));
+    console.log('Postgres pool created (pg loaded).');
   } catch (err) {
-    console.warn('pg module not available or failed to load. Continuing without DB. To enable DB install "pg" and set DATABASE_URL.', err.message || err.toString());
+    console.warn('pg module not installed or failed to initialize. DB disabled. Install "pg" and set DATABASE_URL to enable DB.', err.message || String(err));
     pool = null;
   }
 } else {
-  console.log('No DATABASE_URL configured — DB disabled (falling back to local upload.json).');
+  console.log('No DATABASE_URL configured — DB disabled (using local upload.json).');
 }
 
-// ensure local upload dir exists
+// ensure uploads dir
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // in-memory mappings
 let mappings = {};
 
-// Disk functions
+// disk functions
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
       const text = fs.readFileSync(UPLOAD_JSON, 'utf8');
       mappings = JSON.parse(text || '{}');
-      console.log('Loaded mappings from disk:', UPLOAD_JSON, Object.keys(mappings).length);
+      console.log('Loaded mappings from disk:', Object.keys(mappings).length);
     } else {
       mappings = {};
-      console.log('No upload.json found on disk — starting empty mapping.');
+      console.log('No upload.json found — starting with empty mappings.');
     }
   } catch (err) {
-    console.warn('Failed loading upload.json:', err.message || err.toString());
+    console.warn('Failed to load upload.json:', err.message || String(err));
     mappings = {};
   }
 }
@@ -106,13 +97,12 @@ function saveMappingsToDisk() {
     const tmp = UPLOAD_JSON + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(mappings, null, 2));
     fs.renameSync(tmp, UPLOAD_JSON);
-    // console.log('Saved mappings to disk');
   } catch (err) {
-    console.error('Failed saving upload.json', err);
+    console.error('Failed to save upload.json:', err.message || String(err));
   }
 }
 
-// DB functions + migration
+// DB functions (safe)
 async function runMigrations() {
   if (!pool) return;
   const sql = `
@@ -127,15 +117,11 @@ async function runMigrations() {
     await pool.query(sql);
     console.log('DB migration applied (uploads table ready).');
   } catch (err) {
-    console.error('DB migration failed:', err.message || err.toString());
+    console.error('DB migration failed:', err.message || String(err));
   }
 }
-
 async function loadMappingsFromDB() {
-  if (!pool) {
-    console.log('No DB pool - skipping DB load');
-    return {};
-  }
+  if (!pool) { console.log('No DB pool - skip DB load'); return {}; }
   try {
     const res = await pool.query('SELECT token, data FROM uploads');
     const dbm = {};
@@ -145,11 +131,10 @@ async function loadMappingsFromDB() {
     console.log('Loaded mappings from DB:', Object.keys(dbm).length);
     return dbm;
   } catch (err) {
-    console.warn('Failed loading mappings from DB:', err.message || err.toString());
+    console.warn('Failed loading mappings from DB:', err.message || String(err));
     return {};
   }
 }
-
 async function saveMappingToDB(token, entry) {
   if (!pool) return;
   try {
@@ -161,22 +146,19 @@ async function saveMappingToDB(token, entry) {
     `;
     await pool.query(q, [token, JSON.stringify(entry)]);
   } catch (err) {
-    console.error('Failed saving mapping to DB:', err.message || err.toString());
+    console.error('Failed saving mapping to DB:', err.message || String(err));
   }
 }
 
 // S3 functions
 async function loadMappingsFromS3() {
-  if (!BUCKET || !s3Client) {
-    console.log('Skipping S3 load (no bucket/client)');
-    return;
-  }
+  if (!BUCKET || !s3Client) { console.log('Skipping S3 load (no bucket/client)'); return; }
   try {
     const cmd = new GetObjectCommand({ Bucket: BUCKET, Key: MAPPINGS_KEY });
     const res = await s3Client.send(cmd);
     const streamToString = (stream) => new Promise((resolve, reject) => {
       const chunks = [];
-      stream.on('data', (c) => chunks.push(c));
+      stream.on('data', c => chunks.push(c));
       stream.on('error', reject);
       stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     });
@@ -185,7 +167,7 @@ async function loadMappingsFromS3() {
     mappings = Object.assign({}, s3Mappings, mappings);
     console.log('Merged mappings from S3:', Object.keys(s3Mappings).length);
   } catch (err) {
-    console.warn('Could not load mappings from S3 (maybe first run).', err.message || err.toString());
+    console.warn('Could not load mappings from S3 (maybe first run):', err.message || String(err));
   }
 }
 async function saveMappingsToS3() {
@@ -194,13 +176,13 @@ async function saveMappingsToS3() {
     const body = JSON.stringify(mappings, null, 2);
     const put = new PutObjectCommand({ Bucket: BUCKET, Key: MAPPINGS_KEY, Body: body, ContentType: 'application/json' });
     await s3Client.send(put);
-    console.log('Saved mappings to S3');
+    console.log('Saved mappings to S3.');
   } catch (err) {
-    console.error('Failed saving mappings to S3', err.message || err.toString());
+    console.error('Failed saving mappings to S3:', err.message || String(err));
   }
 }
 
-// token utils
+// utils
 function genToken(len = 8) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let t = '';
@@ -208,12 +190,8 @@ function genToken(len = 8) {
   return t;
 }
 function genUniqueToken() {
-  let t = genToken(8);
-  let tries = 0;
-  while (mappings[t] && tries < 100) {
-    t = genToken(8);
-    tries++;
-  }
+  let t = genToken(8), tries = 0;
+  while (mappings[t] && tries < 100) { t = genToken(8); tries++; }
   if (mappings[t]) t = genToken(12);
   return t;
 }
@@ -225,44 +203,35 @@ function safeFileName(name) {
   return (safeBase + safeExt) || 'file';
 }
 
-// Multer memory storage
+// multer
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 5368709120 } }); // 5GB
 
+// express
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Startup sequence
+// startup: load disk -> migrate DB -> load DB -> load S3 -> persist merged
 loadMappingsFromDisk();
 (async () => {
-  // run migrations first (create table if needed)
-  if (pool) {
-    await runMigrations();
-  }
-
-  // load from DB (if available), merge using DB as source-of-truth
-  const dbm = await loadMappingsFromDB(); // {} if none or error
+  if (pool) await runMigrations();
+  const dbm = await loadMappingsFromDB();
   mappings = Object.assign({}, mappings, dbm);
-
-  // persist any local-only entries into DB for future
   if (pool) {
     for (const [token, entry] of Object.entries(mappings)) {
       if (!dbm[token]) {
-        try { await saveMappingToDB(token, entry); } catch (e) { /* ignore */ }
+        await saveMappingToDB(token, entry).catch(()=>{});
       }
     }
   }
-
-  // attempt S3 merge (optional)
   await loadMappingsFromS3();
-  // persist merged to disk and optionally to S3
   saveMappingsToDisk();
   if (BUCKET) await saveMappingsToS3();
 })();
 
-// Upload endpoint
+// upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -272,7 +241,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const token = genUniqueToken();
     const s3Key = `uploads/TF-${token}/${Date.now()}_${safeOriginal}`;
 
-    // local cache
+    // always write local cache
     const localFilename = `${Date.now()}_${token}_${safeOriginal}`;
     const localPath = path.join(UPLOAD_DIR, localFilename);
     fs.writeFileSync(localPath, req.file.buffer);
@@ -301,80 +270,86 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         entry.s3Key = s3Key;
         entry.storage = 's3';
       } catch (err) {
-        console.warn('S3 upload failed, keeping local cache only:', err.message || err.toString());
+        console.warn('S3 upload failed, keeping local cache:', err.message || String(err));
         entry.storage = 'local';
       }
     }
 
     mappings[token] = entry;
     saveMappingsToDisk();
-    await saveMappingToDB(token, entry).catch(e => {/* ignore db save errors */});
-    await saveMappingsToS3().catch(e => {/* ignore s3 save errors */});
+    await saveMappingToDB(token, entry).catch(()=>{});
+    await saveMappingsToS3().catch(()=>{});
 
     const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
     const fileUrl = BASE_URL ? `${BASE_URL.replace(/\/+$/, '')}${sharePath}` : `${req.protocol}://${req.get('host')}${sharePath}`;
 
     return res.json({ token, url: fileUrl, sharePath, info: entry });
   } catch (err) {
-    console.error('Upload error', err);
+    console.error('Upload error:', err);
     if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
     return res.status(500).json({ error: 'Upload failed', details: err.message || String(err) });
   }
 });
 
-// Serve endpoint
+// serve endpoint — safer handling
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   const token = req.params.token;
   const entry = mappings[token];
   if (!entry) return res.status(404).send('Not found');
 
   try {
-    if (!entry.s3Key || entry.storage === 'local') {
+    // if storage local or s3 client missing, try localPath first
+    if (!entry.s3Key || entry.storage === 'local' || !s3Client) {
       const filePath = entry.localPath || path.join(UPLOAD_DIR, entry.filename || '');
-      if (!filePath || !fs.existsSync(filePath)) return res.status(410).send('File removed or missing');
+      if (!filePath || !fs.existsSync(filePath)) {
+        console.warn('Local file missing for token', token, 'path:', filePath);
+        return res.status(410).send('File removed or missing');
+      }
       const suggestedName = entry.originalName || entry.safeOriginal || path.basename(filePath);
       res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g, '')}"`);
       return res.sendFile(filePath);
     }
 
+    // otherwise attempt S3 presign -> redirect
     const expiresSec = Number(process.env.PRESIGN_EXPIRES || 3600);
     try {
       const getCmd = new GetObjectCommand({ Bucket: BUCKET, Key: entry.s3Key });
       const signedUrl = await getSignedUrl(s3Client, getCmd, { expiresIn: expiresSec });
       return res.redirect(302, signedUrl);
     } catch (err) {
-      console.warn('Presign/redirect failed, falling back to local cache for token', token, err.message || err.toString());
+      console.warn('S3 presign failed for token', token, err.message || String(err));
+      // fallback to localPath if exists
       const filePath = entry.localPath;
       if (filePath && fs.existsSync(filePath)) {
         const suggestedName = entry.originalName || entry.safeOriginal || path.basename(filePath);
         res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g, '')}"`);
         return res.sendFile(filePath);
       }
-      try {
-        const s3Stream = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: entry.s3Key }));
-        const suggestedName = entry.originalName || entry.safeOriginal;
-        res.setHeader('Content-Type', entry.mime || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g,'')}"`);
-        return s3Stream.Body.pipe(res);
-      } catch (err2) {
-        console.error('Error serving file from S3 and no local cache', err2);
-        return res.status(500).send('Serve error');
-      }
+      // no local fallback: return 410 with log
+      console.error('No local fallback and S3 presign failed for token', token);
+      return res.status(410).send('File unavailable');
     }
   } catch (err) {
-    console.error('Error serving file', err);
+    console.error('Error serving file for token', token, err);
     return res.status(500).send('Serve error');
   }
 });
 
+// admin debug endpoint — remove if you want no public debug
+app.get('/_admin/token/:token', (req, res) => {
+  const token = req.params.token;
+  const entry = mappings[token];
+  if (!entry) return res.status(404).json({ ok: false, error: 'not found' });
+  return res.json({ ok: true, token, entry });
+});
+
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// global error handler
 app.use((err, req, res, next) => {
-  if (err && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
-  }
+  if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
   if (err) {
-    console.error(err);
+    console.error('Unhandled error:', err);
     return res.status(500).json({ error: 'Server error', details: err.message || String(err) });
   }
   next();
