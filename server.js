@@ -1,4 +1,6 @@
-// server.js - Store uploads 100% in Postgres (BYTEA), no local file storage
+// server.js - robust DB-migrations + store files in Postgres (BYTEA)
+// Replace your existing server.js with this file and redeploy to Render.
+
 require('dotenv').config();
 
 const express = require('express');
@@ -10,8 +12,9 @@ const compression = require('compression');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
+const MIGRATE_KEY = process.env.MIGRATE_KEY || null;
 
-// Postgres pool (dynamic require)
+// Postgres pool
 let pool = null;
 if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
   try {
@@ -26,15 +29,14 @@ if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim()) {
     pool = null;
   }
 } else {
-  console.error('No DATABASE_URL configured — this server requires Postgres to store files.');
+  console.error('No DATABASE_URL configured — this server requires Postgres to store files in DB.');
   pool = null;
 }
 
-// in-memory metadata cache (token -> metadata)
-// Metadata does NOT contain file bytes.
+// in-memory metadata cache
 let mappings = {};
 
-// disk metadata fallback (optional)
+// disk metadata fallback (debug)
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
@@ -60,97 +62,80 @@ function saveMappingsToDisk() {
   }
 }
 
-// DB migrations and helpers
+// run migrations: create table + column if not exists
 async function runMigrations() {
   if (!pool) {
     console.warn('No DB pool - skipping migrations.');
     return;
   }
-  // Create table with file_data BYTEA column
-  const sql = `
-    CREATE TABLE IF NOT EXISTS uploads (
-      token TEXT PRIMARY KEY,
-      data JSONB NOT NULL,
-      file_data BYTEA,
-      created_at TIMESTAMPTZ DEFAULT now()
-    );
-    CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);
-  `;
   try {
-    await pool.query(sql);
-    console.log('DB migration applied (uploads table ready).');
+    const createSql = `
+      CREATE TABLE IF NOT EXISTS uploads (
+        token TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        file_data BYTEA,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `;
+    await pool.query(createSql);
+    await pool.query(`ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA;`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);`);
+    console.log('DB migration applied (uploads table + file_data ready).');
   } catch (err) {
     console.error('DB migration failed:', err && err.message);
+    throw err;
   }
 }
 
-// load metadata (NOT file bytes) from DB into in-memory mappings
-async function loadMappingsFromDB() {
-  if (!pool) {
-    console.log('No DB pool - skipping DB load');
-    return {};
-  }
-  try {
-    const res = await pool.query('SELECT token, data FROM uploads');
-    const dbm = {};
-    (res.rows || []).forEach(r => dbm[r.token] = r.data);
-    console.log('Loaded mappings from DB:', Object.keys(dbm).length);
-    return dbm;
-  } catch (err) {
-    console.warn('Failed loading mappings from DB:', err && err.message);
-    return {};
-  }
-}
-
-// Save metadata (JSON) to DB (without file bytes)
-async function saveMappingMetadataToDB(token, entry) {
-  if (!pool) return;
-  try {
-    const q = `
-      INSERT INTO uploads (token, data, created_at)
-      VALUES ($1, $2::jsonb, NOW())
-      ON CONFLICT (token)
-      DO UPDATE SET data = $2::jsonb, created_at = NOW();
-    `;
-    await pool.query(q, [token, JSON.stringify(entry)]);
-  } catch (err) {
-    console.error('Failed saving mapping metadata to DB:', err && err.message);
-  }
-}
-
-// Save file bytes + metadata to DB (used during upload)
+// helpers to interact with DB
 async function saveFileToDB(token, entry, buffer) {
-  if (!pool) {
-    throw new Error('No database pool available');
-  }
+  if (!pool) throw new Error('No database pool available');
+  const q = `
+    INSERT INTO uploads (token, data, file_data, created_at)
+    VALUES ($1, $2::jsonb, $3, NOW())
+    ON CONFLICT (token)
+    DO UPDATE SET data = $2::jsonb, file_data = $3, created_at = NOW();
+  `;
   try {
-    const q = `
-      INSERT INTO uploads (token, data, file_data, created_at)
-      VALUES ($1, $2::jsonb, $3, NOW())
-      ON CONFLICT (token)
-      DO UPDATE SET data = $2::jsonb, file_data = $3, created_at = NOW();
-    `;
     await pool.query(q, [token, JSON.stringify(entry), buffer]);
   } catch (err) {
-    console.error('Failed saving file to DB:', err && err.message);
+    // If column missing, try to run migrations then retry once
+    const msg = (err && err.message) || '';
+    if (msg.includes('column "file_data"') || msg.includes('does not exist')) {
+      console.warn('Save to DB failed because file_data missing. Running migrations and retrying...');
+      try {
+        await runMigrations();
+        await pool.query(q, [token, JSON.stringify(entry), buffer]);
+        console.log('Retry saveFileToDB after migration succeeded for token', token);
+        return;
+      } catch (err2) {
+        console.error('Retry after migration failed:', err2 && err2.message);
+        throw err2;
+      }
+    }
     throw err;
   }
 }
 
-// Fetch file bytes + metadata from DB when serving
 async function fetchFileFromDB(token) {
   if (!pool) throw new Error('No database pool available');
-  try {
-    const r = await pool.query('SELECT data, file_data FROM uploads WHERE token = $1', [token]);
-    if (!r.rowCount) return null;
-    return { data: r.rows[0].data, file: r.rows[0].file_data };
-  } catch (err) {
-    console.error('Failed fetching file from DB:', err && err.message);
-    throw err;
-  }
+  const r = await pool.query('SELECT data, file_data FROM uploads WHERE token = $1', [token]);
+  if (!r.rowCount) return null;
+  return { data: r.rows[0].data, file: r.rows[0].file_data };
 }
 
-// utility: token generator and safe filename & truncate
+async function saveMappingMetadataToDB(token, entry) {
+  if (!pool) return;
+  const q = `
+    INSERT INTO uploads (token, data, created_at)
+    VALUES ($1, $2::jsonb, NOW())
+    ON CONFLICT (token)
+    DO UPDATE SET data = $2::jsonb, created_at = NOW();
+  `;
+  await pool.query(q, [token, JSON.stringify(entry)]);
+}
+
+// token + filename helpers
 function genToken(len = 8) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let t = '';
@@ -179,56 +164,55 @@ function truncateMiddle(name, maxLen = 30) {
   return `${start}…${end}`;
 }
 
-// multer in-memory
+// multer memory storage
 const multerStorage = multer.memoryStorage();
-const upload = multer({ storage: multerStorage, limits: { fileSize: 5368709120 } }); // 5GB
+const upload = multer({ storage: multerStorage, limits: { fileSize: Number(process.env.MAX_FILE_SIZE || 5368709120) } });
 
-// express
 const app = express();
 app.use(cors());
 app.use(compression());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Startup: load disk then DB metadata
+// startup: load disk mappings then DB + migrations, then start server
 loadMappingsFromDisk();
 (async () => {
-  if (!pool) {
-    console.error('Database not configured. This server requires DATABASE_URL to store files in DB.');
-    // keep using disk metadata if present, but uploads will fail.
-    return;
-  }
-  await runMigrations();
-  const dbm = await loadMappingsFromDB();
-  // prefer DB metadata over disk
-  mappings = Object.assign({}, mappings, dbm);
-  // persist any disk-only metadata into DB (without file bytes) if needed
-  for (const [token, entry] of Object.entries(mappings)) {
-    if (!dbm[token]) {
-      // save metadata only (no file bytes)
-      await saveMappingMetadataToDB(token, entry).catch(()=>{});
+  try {
+    if (!pool) {
+      console.error('No DATABASE_URL configured. Server will still run but uploads to DB will fail.');
+    } else {
+      // run migrations and load metadata
+      await runMigrations();
+      const res = await pool.query('SELECT token, data FROM uploads');
+      const dbm = {};
+      (res.rows || []).forEach(r => dbm[r.token] = r.data);
+      mappings = Object.assign({}, mappings, dbm);
+      // persist metadata-only entries to DB if any local-only exists
+      for (const [token, entry] of Object.entries(mappings)) {
+        if (!dbm[token]) {
+          await saveMappingMetadataToDB(token, entry).catch(()=>{});
+        }
+      }
+      console.log('Loaded mappings from DB:', Object.keys(mappings).length);
     }
+  } catch (err) {
+    console.error('Startup error (migrations/load):', err && err.message);
   }
-  // persist merged mapping to disk for debug (optional)
-  saveMappingsToDisk();
 })();
 
-// Pagination endpoint (metadata-only)
+// pagination (metadata)
 app.get('/uploads', async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 20, 100);
+  const limit = Math.min(Number(req.query.limit) || 20, 200);
   const offset = Math.max(Number(req.query.offset) || 0, 0);
   if (pool) {
     try {
-      const q = `SELECT token, data->>'originalName' as name, data->>'safeOriginal' as safeOriginal, data->>'storage' as storage, created_at
-                 FROM uploads
-                 ORDER BY created_at DESC
-                 LIMIT $1 OFFSET $2`;
+      const q = `SELECT token, data->>'originalName' as name, data->>'safeOriginal' as safeOriginal, created_at
+                 FROM uploads ORDER BY created_at DESC LIMIT $1 OFFSET $2`;
       const r = await pool.query(q, [limit, offset]);
       const items = r.rows.map(row => ({
         token: row.token,
-        displayName: truncateMiddle(row.name || row.safOriginal || row.safeoriginal || row.safeOriginal || (row.safeOriginal)),
-        safeOriginal: row.safeoriginal || row.safeOriginal || row.safeOriginal,
-        storage: row.storage || 'db',
+        displayName: truncateMiddle(row.name || row.safeOriginal, 30),
+        safeOriginal: row.safeOriginal,
         createdAt: row.created_at
       }));
       return res.json({ items });
@@ -237,19 +221,11 @@ app.get('/uploads', async (req, res) => {
       return res.status(500).json({ error: 'DB list error' });
     }
   }
-  // fallback to in-memory
-  const all = Object.values(mappings).sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const slice = all.slice(offset, offset + limit).map(e => ({
-    token: e.token,
-    displayName: truncateMiddle(e.originalName || e.safeOriginal, 30),
-    safeOriginal: e.safeOriginal,
-    storage: e.storage || 'db',
-    createdAt: e.createdAt
-  }));
-  return res.json({ items: slice, total: all.length });
+  const all = Object.values(mappings).sort((a,b)=> new Date(b.createdAt)-new Date(a.createdAt));
+  return res.json({ items: all.slice(offset, offset+limit) });
 });
 
-// UPLOAD: store file bytes directly in DB (no local file)
+// upload -> store into DB (BYTEA)
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -259,7 +235,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const safeOriginal = safeFileName(originalName);
     const token = genUniqueToken();
 
-    // prepare metadata entry
     const entry = {
       token,
       originalName,
@@ -267,24 +242,25 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       size: req.file.size,
       mime: req.file.mimetype,
       createdAt: new Date().toISOString(),
-      storage: 'db' // stored in DB
+      storage: 'db'
     };
 
-    // save to DB (file bytes + metadata)
-    await saveFileToDB(token, entry, req.file.buffer);
+    // Save bytes+metadata to DB, with automatic migration retry if needed
+    try {
+      await saveFileToDB(token, entry, req.file.buffer);
+    } catch (err) {
+      console.error('Failed saving file to DB:', err && err.message);
+      return res.status(500).json({ error: 'Failed saving file to DB', details: err && err.message });
+    }
 
-    // update in-memory mapping
     mappings[token] = entry;
-    // persist metadata to disk for debug (optional)
     saveMappingsToDisk();
-
-    // build URL
-    const encodedName = encodeURIComponent(safeOriginal);
+    // build url
     const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
     const proto = protoHeader || req.protocol || 'https';
     const host = req.get('host');
     const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-    const sharePath = `/TF-${token}/${encodedName}`;
+    const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
     const fileUrl = `${origin}${sharePath}`;
 
     return res.json({ token, url: fileUrl, sharePath, info: entry, displayName: truncateMiddle(originalName, 36) });
@@ -294,32 +270,24 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// SERVE: fetch bytes from DB and stream/send
+// serve file from DB
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
-  const token = req.params.token;
-  // check in-memory mapping first for quick metadata; but fetch file bytes from DB
   try {
+    const token = req.params.token;
     if (!pool) return res.status(500).send('Database not configured');
-
     const fetched = await fetchFileFromDB(token);
     if (!fetched) return res.status(404).send('Not found');
     const entry = fetched.data || mappings[token];
     const fileBuf = fetched.file;
-
     if (!fileBuf) {
       console.warn('No file bytes stored in DB for token', token);
       return res.status(410).send('File removed or missing');
     }
-
-    // headers
     const mime = (entry && entry.mime) || 'application/octet-stream';
     const suggestedName = (entry && (entry.originalName || entry.safeOriginal)) || `file-${token}`;
     res.setHeader('Content-Type', mime);
     res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g, '')}"`);
-    // cache static uploads long-term (optional)
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-
-    // send buffer
     return res.send(fileBuf);
   } catch (err) {
     console.error('Error serving file', err && err.message);
@@ -327,10 +295,20 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   }
 });
 
-// Admin debug: inspect mapping
+// admin: run migrations manually (protected)
+app.post('/_admin/run-migrations', async (req, res) => {
+  const key = req.headers['x-migrate-key'] || req.query.key;
+  if (!MIGRATE_KEY || key !== MIGRATE_KEY) return res.status(403).json({ ok:false, error:'forbidden' });
+  try {
+    await runMigrations();
+    return res.json({ ok:true, message: 'migrations run' });
+  } catch (err) {
+    return res.status(500).json({ ok:false, error: err && err.message });
+  }
+});
+
 app.get('/_admin/token/:token', async (req, res) => {
   const token = req.params.token;
-  // prefer metadata from mappings; also show whether DB has bytes
   try {
     if (!pool) {
       const entry = mappings[token];
@@ -346,18 +324,15 @@ app.get('/_admin/token/:token', async (req, res) => {
   }
 });
 
-// health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// error handler
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
   if (err) {
-    console.error(err);
+    console.error('Unhandled error:', err && err.message);
     return res.status(500).json({ error: 'Server error', details: err && err.message });
   }
   next();
 });
 
-// start
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
