@@ -1,4 +1,4 @@
-// server.js (Postgres optional - safe dynamic require)
+// server.js — defensive + auto-migrate + skip-placeholder-S3
 require('dotenv').config();
 
 const express = require('express');
@@ -12,49 +12,80 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
-const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json'); // local fallback file
+const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
 const MAPPINGS_KEY = process.env.MAPPINGS_KEY || 'mappings.json';
-const BUCKET = process.env.S3_BUCKET || process.env.BUCKET || null;
+let BUCKET = process.env.S3_BUCKET || process.env.BUCKET || null;
+const S3_REGION = process.env.S3_REGION || null;
 const BASE_URL = process.env.BASE_URL || null;
 
-// S3 client
-const s3Client = new S3Client({
-  region: process.env.S3_REGION || 'auto',
-  endpoint: process.env.S3_ENDPOINT || undefined,
-  forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true' || false,
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
-  }
-});
+// Helper: detect obvious placeholder values and treat them as unset
+function looksLikePlaceholder(val) {
+  if (!val || typeof val !== 'string') return true;
+  const low = val.toLowerCase();
+  return low.includes('your-') || low.includes('example') || low.includes('replace') || low.includes('yourbucket') || low.includes('s3.your-region');
+}
 
-// Postgres pool (only if DATABASE_URL present AND pg is installed)
+// If BUCKET or S3_REGION look like placeholders, disable S3 usage
+if (looksLikePlaceholder(BUCKET) || looksLikePlaceholder(S3_REGION) ||
+    looksLikePlaceholder(process.env.S3_ACCESS_KEY_ID) || looksLikePlaceholder(process.env.S3_SECRET_ACCESS_KEY)
+) {
+  console.warn('S3 config looks like placeholders or missing — S3 disabled. To enable, set real S3 env vars (S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY).');
+  BUCKET = null;
+}
+
+// Create S3 client only if BUCKET configured
+let s3Client = null;
+if (BUCKET) {
+  s3Client = new S3Client({
+    region: process.env.S3_REGION || 'auto',
+    endpoint: process.env.S3_ENDPOINT || undefined,
+    forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true' || false,
+    credentials: {
+      accessKeyId: process.env.S3_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY
+    }
+  });
+  console.log('S3 client created for bucket', BUCKET);
+} else {
+  console.log('S3 client not created (no bucket configured)');
+}
+
+// Postgres pool creation (defensive)
 let pool = null;
-if (process.env.DATABASE_URL) {
+if (process.env.DATABASE_URL && typeof process.env.DATABASE_URL === 'string' && process.env.DATABASE_URL.trim() !== '') {
   try {
-    const { Pool } = require('pg'); // dynamic require inside try/catch
+    const { Pool } = require('pg'); // dynamic require
     const cfg = { connectionString: process.env.DATABASE_URL };
-    if (process.env.DATABASE_SSL === 'true') {
+    if (process.env.DATABASE_SSL === 'true' || process.env.DATABASE_SSL === '1') {
       cfg.ssl = { rejectUnauthorized: false };
     }
     pool = new Pool(cfg);
     pool.on('error', (err) => {
       console.error('Unexpected PG client error', err);
     });
-    console.log('Postgres pool created (pg loaded).');
+
+    // Log masked DB URL (for debugging) — mask credentials
+    try {
+      const safe = process.env.DATABASE_URL.replace(/:\/\/([^:]+):([^@]+)@/, '://$1:••••@');
+      console.log('Postgres pool created (pg loaded). DB URL:', safe);
+    } catch (e) {
+      console.log('Postgres pool created (pg loaded).');
+    }
   } catch (err) {
     console.warn('pg module not available or failed to load. Continuing without DB. To enable DB install "pg" and set DATABASE_URL.', err.message || err.toString());
     pool = null;
   }
+} else {
+  console.log('No DATABASE_URL configured — DB disabled (falling back to local upload.json).');
 }
 
 // ensure local upload dir exists
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// in-memory mappings: token -> info
+// in-memory mappings
 let mappings = {};
 
-// --- Disk persistence functions (upload.json) ---
+// Disk functions
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
@@ -63,6 +94,7 @@ function loadMappingsFromDisk() {
       console.log('Loaded mappings from disk:', UPLOAD_JSON, Object.keys(mappings).length);
     } else {
       mappings = {};
+      console.log('No upload.json found on disk — starting empty mapping.');
     }
   } catch (err) {
     console.warn('Failed loading upload.json:', err.message || err.toString());
@@ -74,12 +106,31 @@ function saveMappingsToDisk() {
     const tmp = UPLOAD_JSON + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(mappings, null, 2));
     fs.renameSync(tmp, UPLOAD_JSON);
+    // console.log('Saved mappings to disk');
   } catch (err) {
     console.error('Failed saving upload.json', err);
   }
 }
 
-// --- DB persistence functions (Postgres) ---
+// DB functions + migration
+async function runMigrations() {
+  if (!pool) return;
+  const sql = `
+    CREATE TABLE IF NOT EXISTS uploads (
+      token TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);
+  `;
+  try {
+    await pool.query(sql);
+    console.log('DB migration applied (uploads table ready).');
+  } catch (err) {
+    console.error('DB migration failed:', err.message || err.toString());
+  }
+}
+
 async function loadMappingsFromDB() {
   if (!pool) {
     console.log('No DB pool - skipping DB load');
@@ -88,7 +139,9 @@ async function loadMappingsFromDB() {
   try {
     const res = await pool.query('SELECT token, data FROM uploads');
     const dbm = {};
-    res.rows.forEach(r => { dbm[r.token] = r.data; });
+    if (res && res.rows) {
+      res.rows.forEach(r => { dbm[r.token] = r.data; });
+    }
     console.log('Loaded mappings from DB:', Object.keys(dbm).length);
     return dbm;
   } catch (err) {
@@ -108,14 +161,14 @@ async function saveMappingToDB(token, entry) {
     `;
     await pool.query(q, [token, JSON.stringify(entry)]);
   } catch (err) {
-    console.error('Failed saving mapping to DB:', err);
+    console.error('Failed saving mapping to DB:', err.message || err.toString());
   }
 }
 
-// --- S3 persistence (optional) ---
+// S3 functions
 async function loadMappingsFromS3() {
-  if (!BUCKET) {
-    console.warn('No S3 bucket configured — skipping S3 mappings load.');
+  if (!BUCKET || !s3Client) {
+    console.log('Skipping S3 load (no bucket/client)');
     return;
   }
   try {
@@ -129,7 +182,6 @@ async function loadMappingsFromS3() {
     });
     const text = await streamToString(res.Body);
     const s3Mappings = JSON.parse(text || '{}');
-    // merge: prefer local/disk mappings (so manual edits or results since last S3 save stay)
     mappings = Object.assign({}, s3Mappings, mappings);
     console.log('Merged mappings from S3:', Object.keys(s3Mappings).length);
   } catch (err) {
@@ -137,15 +189,14 @@ async function loadMappingsFromS3() {
   }
 }
 async function saveMappingsToS3() {
-  if (!BUCKET) {
-    return;
-  }
+  if (!BUCKET || !s3Client) return;
   try {
     const body = JSON.stringify(mappings, null, 2);
     const put = new PutObjectCommand({ Bucket: BUCKET, Key: MAPPINGS_KEY, Body: body, ContentType: 'application/json' });
     await s3Client.send(put);
+    console.log('Saved mappings to S3');
   } catch (err) {
-    console.error('Failed saving mappings to S3', err);
+    console.error('Failed saving mappings to S3', err.message || err.toString());
   }
 }
 
@@ -183,15 +234,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Startup: load disk mappings first, then DB, then S3, then persist merged results
+// Startup sequence
 loadMappingsFromDisk();
 (async () => {
-  const dbm = await loadMappingsFromDB(); // {} if no DB
-  // Merge: prefer DB entries where they exist (dbm overrides disk),
-  // but ensure any local-only mappings are persisted to DB
+  // run migrations first (create table if needed)
+  if (pool) {
+    await runMigrations();
+  }
+
+  // load from DB (if available), merge using DB as source-of-truth
+  const dbm = await loadMappingsFromDB(); // {} if none or error
   mappings = Object.assign({}, mappings, dbm);
 
-  // Persist local-only entries into DB (so future starts use DB as source)
+  // persist any local-only entries into DB for future
   if (pool) {
     for (const [token, entry] of Object.entries(mappings)) {
       if (!dbm[token]) {
@@ -200,13 +255,14 @@ loadMappingsFromDisk();
     }
   }
 
-  // try loading from S3 and then persist final result to disk and S3
+  // attempt S3 merge (optional)
   await loadMappingsFromS3();
+  // persist merged to disk and optionally to S3
   saveMappingsToDisk();
   if (BUCKET) await saveMappingsToS3();
 })();
 
-// Upload endpoint -> store in S3 + local cache + update upload.json + DB
+// Upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -216,12 +272,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const token = genUniqueToken();
     const s3Key = `uploads/TF-${token}/${Date.now()}_${safeOriginal}`;
 
-    // ALWAYS save a local cache copy for resilience
+    // local cache
     const localFilename = `${Date.now()}_${token}_${safeOriginal}`;
     const localPath = path.join(UPLOAD_DIR, localFilename);
     fs.writeFileSync(localPath, req.file.buffer);
 
-    // prepare mapping entry
     const entry = {
       token,
       s3Key: null,
@@ -230,11 +285,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
       size: req.file.size,
       mime: req.file.mimetype,
       createdAt: new Date().toISOString(),
-      storage: 'local', // may be updated to 's3' if upload succeeds
-      localPath // absolute/relative path on server
+      storage: 'local',
+      localPath
     };
 
-    if (BUCKET) {
+    if (BUCKET && s3Client) {
       try {
         const put = new PutObjectCommand({
           Bucket: BUCKET,
@@ -249,20 +304,15 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         console.warn('S3 upload failed, keeping local cache only:', err.message || err.toString());
         entry.storage = 'local';
       }
-    } else {
-      entry.storage = 'local';
     }
 
-    // store mapping and persist to DB/disk/S3
     mappings[token] = entry;
     saveMappingsToDisk();
     await saveMappingToDB(token, entry).catch(e => {/* ignore db save errors */});
     await saveMappingsToS3().catch(e => {/* ignore s3 save errors */});
 
     const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
-    const fileUrl = BASE_URL
-      ? `${BASE_URL.replace(/\/+$/, '')}${sharePath}`
-      : `${req.protocol}://${req.get('host')}${sharePath}`;
+    const fileUrl = BASE_URL ? `${BASE_URL.replace(/\/+$/, '')}${sharePath}` : `${req.protocol}://${req.get('host')}${sharePath}`;
 
     return res.json({ token, url: fileUrl, sharePath, info: entry });
   } catch (err) {
@@ -272,14 +322,13 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Serve file by token: try S3 (signed URL) -> fallback to local cache
+// Serve endpoint
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   const token = req.params.token;
   const entry = mappings[token];
   if (!entry) return res.status(404).send('Not found');
 
   try {
-    // If it's only local storage or local file exists, serve it
     if (!entry.s3Key || entry.storage === 'local') {
       const filePath = entry.localPath || path.join(UPLOAD_DIR, entry.filename || '');
       if (!filePath || !fs.existsSync(filePath)) return res.status(410).send('File removed or missing');
@@ -288,14 +337,12 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
       return res.sendFile(filePath);
     }
 
-    // entry has s3Key - try to generate signed URL and redirect
-    const expiresSec = Number(process.env.PRESIGN_EXPIRES || 3600); // seconds
+    const expiresSec = Number(process.env.PRESIGN_EXPIRES || 3600);
     try {
       const getCmd = new GetObjectCommand({ Bucket: BUCKET, Key: entry.s3Key });
       const signedUrl = await getSignedUrl(s3Client, getCmd, { expiresIn: expiresSec });
       return res.redirect(302, signedUrl);
     } catch (err) {
-      // fallback to local cached copy if S3 presign or fetch fails
       console.warn('Presign/redirect failed, falling back to local cache for token', token, err.message || err.toString());
       const filePath = entry.localPath;
       if (filePath && fs.existsSync(filePath)) {
@@ -303,7 +350,6 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
         res.setHeader('Content-Disposition', `inline; filename="${suggestedName.replace(/"/g, '')}"`);
         return res.sendFile(filePath);
       }
-      // if no local copy, attempt to proxy from S3 (last resort)
       try {
         const s3Stream = await s3Client.send(new GetObjectCommand({ Bucket: BUCKET, Key: entry.s3Key }));
         const suggestedName = entry.originalName || entry.safeOriginal;
@@ -321,10 +367,8 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   }
 });
 
-// health
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Error handler (multer size limit)
 app.use((err, req, res, next) => {
   if (err && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: 'File too large. Max 5 GB allowed.' });
