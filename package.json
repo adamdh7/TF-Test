@@ -1,8 +1,7 @@
-
 {
   "name": "tf-stream-url",
   "version": "1.0.0",
-  "description": "Serveur d'upload persistant (S3 / R2 / Spaces) avec URLs tokenisées",
+  "description": "Serveur d'upload persistant (S3 / R2 / Spaces) avek URLs tokenize",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -17,7 +16,8 @@
     "multer": "1.4.5-lts.1",
     "@aws-sdk/client-s3": "^3.400.0",
     "@aws-sdk/s3-request-presigner": "^3.400.0",
-    "dotenv": "^16.3.0"
+    "dotenv": "^16.3.0",
+    "pg": "^8.11.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
