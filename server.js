@@ -309,7 +309,17 @@ async function pendingRetryLoop() {
 // -------------------- express app --------------------
 const app = express();
 app.use(cors());
-app.use(compression());
+
+// IMPORTANT CHANGE: do not compress TF- endpoints (video streaming). Use compression.filter but skip paths starting with /TF-
+app.use(compression({
+  filter: (req, res) => {
+    try {
+      if (req && req.path && req.path.startsWith('/TF-')) return false;
+    } catch(e){}
+    return compression.filter(req, res);
+  }
+}));
+
 app.use(express.json());
 
 // serve static first (index.html is in public)
@@ -392,6 +402,23 @@ function parseRange(rangeHeader, size) {
   return { start: s, end: e };
 }
 
+// -------------------- helper: infer mime from filename --------------------
+function inferMimeFromName(name, fallback) {
+  if (!name) return fallback || 'application/octet-stream';
+  const ext = path.extname(name || '').toLowerCase();
+  const map = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ogg': 'video/ogg',
+    '.ogv': 'video/ogg',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.mov': 'video/quicktime'
+  };
+  return map[ext] || fallback || 'application/octet-stream';
+}
+
 // -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   try {
@@ -404,11 +431,17 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
       if (fileData && fileData.buf) {
         const buf = fileData.buf;
         const meta = await fetchUploadEntryAcrossPools(token);
-        const mime = (meta && meta.data && meta.data.mime) || (mappings[token] && mappings[token].mime) || 'application/octet-stream';
+        let mime = (meta && meta.data && meta.data.mime) || (mappings[token] && mappings[token].mime) || null;
+        mime = inferMimeFromName(req.params.name || (meta && meta.data && meta.data.safeOriginal) || (mappings[token] && mappings[token].safeOriginal), mime);
         const fileLen = buf.length;
         const range = parseRange(req.headers.range, fileLen);
+
+        // common headers
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Content-Disposition', 'inline'); // <- ensure inline, not attachment
+        res.setHeader('Content-Type', mime);
+
         if (range) {
           const { start, end } = range;
           if (start >= fileLen || end >= fileLen) {
@@ -418,14 +451,12 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
           const chunk = buf.slice(start, end + 1);
           res.status(206).set({
             'Content-Range': `bytes ${start}-${end}/${fileLen}`,
-            'Content-Length': String(chunk.length),
-            'Content-Type': mime
+            'Content-Length': String(chunk.length)
           });
           return res.send(chunk);
         } else {
           res.set({
-            'Content-Length': String(fileLen),
-            'Content-Type': mime
+            'Content-Length': String(fileLen)
           });
           return res.send(buf);
         }
@@ -442,14 +473,18 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
         const chunks = rows.map(r => Buffer.from(r.chunk));
         const chunkLens = chunks.map(b => b.length);
         const total = chunkLens.reduce((a,b)=>a+b,0);
-        const range = parseRange(req.headers.range, total);
-        const mime = (mappings[token] && mappings[token].mime) || 'application/octet-stream';
+        let mime = (mappings[token] && mappings[token].mime) || null;
+        mime = inferMimeFromName(req.params.name || (mappings[token] && mappings[token].safeOriginal), mime);
+
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Content-Disposition', 'inline');
+        res.setHeader('Content-Type', mime);
+
+        const range = parseRange(req.headers.range, total);
 
         if (!range) {
           // stream all sequentially
-          res.setHeader('Content-Type', mime);
           res.setHeader('Content-Length', String(total));
           for (const b of chunks) res.write(b);
           return res.end();
@@ -460,28 +495,25 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             return;
           }
           const sendLen = end - start + 1;
-          res.status(206);
-          res.set({
+          res.status(206).set({
             'Content-Range': `bytes ${start}-${end}/${total}`,
-            'Content-Length': String(sendLen),
-            'Content-Type': mime
+            'Content-Length': String(sendLen)
           });
           // find which chunks and offsets to send
-          let pos = 0;
           let remainingStart = start;
-          for (let i=0;i<chunks.length && remainingStart <= end;i++) {
+          let remainingToSend = sendLen;
+          for (let i=0;i<chunks.length && remainingToSend>0;i++) {
             const cl = chunkLens[i];
             if (remainingStart >= cl) {
               remainingStart -= cl;
-              pos += cl;
               continue;
             }
             // send from this chunk
-            const chunkStart = remainingStart;
-            const chunkEnd = Math.min(cl - 1, remainingStart + (end - start) - (pos - start));
-            const slice = chunks[i].slice(chunkStart, chunkEnd + 1);
+            const sliceStart = remainingStart;
+            const sliceEnd = Math.min(cl - 1, sliceStart + remainingToSend - 1);
+            const slice = chunks[i].slice(sliceStart, sliceEnd + 1);
             res.write(slice);
-            pos += (chunkEnd - chunkStart + 1);
+            remainingToSend -= (sliceEnd - sliceStart + 1);
             remainingStart = 0;
           }
           return res.end();
@@ -503,11 +535,15 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             if (fs.existsSync(binPath)) {
               const stat = fs.statSync(binPath);
               const size = stat.size;
-              const mime = (meta.entry && meta.entry.mime) || 'application/octet-stream';
+              let mime = (meta.entry && meta.entry.mime) || null;
+              mime = inferMimeFromName(req.params.name || (meta.entry && meta.entry.safeOriginal), mime);
+
               const range = parseRange(req.headers.range, size);
               res.setHeader('Accept-Ranges', 'bytes');
               res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
               res.setHeader('Content-Type', mime);
+              res.setHeader('Content-Disposition', 'inline');
+
               if (range) {
                 const { start, end } = range;
                 if (start >= size || end >= size) { res.status(416).set('Content-Range', `bytes */${size}`).end(); return; }
