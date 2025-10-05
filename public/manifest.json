@@ -1,6 +1,6 @@
 {
-  "name": "TF-Stream-Url",
-  "short_name": "TF-Stream-Url",
+  "name": "Adam_D'H7",
+  "short_name": "Adam_D'H7",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -8,61 +8,61 @@
   "theme_color": "#000000",
   "icons": [
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "72x72",
       "purpose": "any maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "96x96",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "128x128",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "144x144",
        "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "152x152",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "192x192",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "256x256",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "384x384",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "512x512",
       "purpose": "maskable",
       "type": "image/jpeg"
     },
     {
-      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1755996395/tf-stream-url/tfstream-text-only_mo4wml.png",
+      "src": "https://res.cloudinary.com/dglludnfq/image/upload/v1759692398/tf-stream-url/IMG-20251002-WA0108.jpg",
       "sizes": "512x512",
       "type": "image/jpeg",
       "purpose": "maskable"
