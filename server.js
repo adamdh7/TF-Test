@@ -114,6 +114,24 @@ function safeFileName(name) {
   const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '');
   return (safeBase + safeExt) || 'file';
 }
+function humanBytes(n) {
+  if (!n && n !== 0) return '0B';
+  if (n === 0) return '0B';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  let v = n;
+  while(v >= 1024 && i < units.length-1){ v /= 1024; i++; }
+  return `${Math.round(v*10)/10}${units[i]}`;
+}
+function humanTimeFromSeconds(s) {
+  if (typeof s !== 'number' || !isFinite(s)) return null;
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = Math.floor(s % 60);
+  if (hrs > 0) return `${hrs}h${mins}m${secs}s`;
+  if (mins > 0) return `${mins}m${secs}s`;
+  return `${secs}s`;
+}
 
 // -------------------- migrations --------------------
 async function runMigrationsOnPool(pinfo) {
@@ -397,12 +415,54 @@ app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }))
 const multerStorage = multer.memoryStorage();
 const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZE } });
 
-// ---------- upload ----------
-app.post('/upload', upload.single('file'), async (req, res) => {
+// -------------------- NEW: incoming-progress middleware for /upload --------------------
+// This middleware sets a temporary token on req (`req._tf_token`) and logs incoming bytes
+function uploadProgressMiddleware(req, res, next) {
+  // only for POST /upload (protect other routes)
+  if (req.method !== 'POST' || !req.path || !req.path.startsWith('/upload')) return next();
+
+  // create token early so we can show it on terminal during upload
+  const earlyToken = 'TF-' + genToken(7);
+  req._tf_token = earlyToken;
+
+  const total = Number(req.headers['content-length'] || 0);
+  let received = 0;
+
+  // show initial line
+  process.stdout.write(`${earlyToken} 0B/${total ? humanBytes(total) : 'unknown'}\r`);
+
+  function onData(chunk) {
+    received += chunk.length;
+    const pct = total ? Math.round((received / total) * 100) : null;
+    const pctStr = pct !== null ? ` ${pct}%` : '';
+    process.stdout.write(`${earlyToken} ${humanBytes(received)}/${total ? humanBytes(total) : humanBytes(received)}${pctStr}\r`);
+  }
+  function onEnd() {
+    // finalize output line and remove listeners
+    process.stdout.write(`${earlyToken} ${humanBytes(received)}/${total ? humanBytes(total) : humanBytes(received)}\n`);
+    cleanup();
+  }
+  function onClose() {
+    cleanup();
+  }
+  function cleanup() {
+    try { req.removeListener('data', onData); req.removeListener('end', onEnd); req.removeListener('close', onClose); } catch(e){}
+  }
+
+  req.on('data', onData);
+  req.on('end', onEnd);
+  req.on('close', onClose);
+
+  next();
+}
+
+// Use the middleware before multer so progress shows while multer is uploading
+app.post('/upload', uploadProgressMiddleware, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const token = genToken(10);
+    // prefer token assigned by middleware so terminal lines match
+    const token = req._tf_token || genToken(10);
     const originalName = req.file.originalname || 'file';
     const safeOriginal = safeFileName(originalName);
     const entry = {
@@ -457,18 +517,46 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// -------------------- helper: parse Range header --------------------
+// -------------------- helper: parse Range header (robust) --------------------
 function parseRange(rangeHeader, size) {
   if (!rangeHeader) return null;
-  const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+  // normalize and support spaces
+  const header = String(rangeHeader).trim();
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header);
   if (!m) return null;
-  const start = m[1] === '' ? null : parseInt(m[1], 10);
-  const end = m[2] === '' ? null : parseInt(m[2], 10);
-  if (start === null && end === null) return null;
-  const s = start !== null ? start : (size - (end + 1));
-  const e = end !== null ? end : (size - 1);
-  if (isNaN(s) || isNaN(e) || s > e || s < 0) return null;
-  return { start: s, end: e };
+  const startStr = m[1];
+  const endStr = m[2];
+
+  // suffix range: bytes=-N  => last N bytes
+  if (startStr === '' && endStr !== '') {
+    const lastN = Number(endStr);
+    if (Number.isNaN(lastN) || lastN <= 0) return null;
+    const start = Math.max(0, size - lastN);
+    const end = size - 1;
+    if (start > end) return null;
+    return { start, end };
+  }
+
+  // open-ended range: bytes=START-  => START..end
+  if (startStr !== '' && endStr === '') {
+    const start = Number(startStr);
+    if (Number.isNaN(start) || start < 0) return null;
+    if (start >= size) return null;
+    return { start, end: size - 1 };
+  }
+
+  // explicit range: bytes=START-END
+  if (startStr !== '' && endStr !== '') {
+    let start = Number(startStr);
+    let end = Number(endStr);
+    if (Number.isNaN(start) || Number.isNaN(end) || start < 0 || end < 0 || start > end) return null;
+    // clamp end to size-1 to avoid 416 when client sends a slightly too-big end
+    if (start >= size) return null;
+    if (end >= size) end = size - 1;
+    return { start, end };
+  }
+
+  return null;
 }
 
 // -------------------- helper: infer mime from filename --------------------
@@ -489,9 +577,12 @@ function inferMimeFromName(name, fallback) {
 }
 
 // -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
-app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
+// NOTE: I added '/:token/:name' alias so requests that omit 'TF-' or use legacy urls still work.
+app.get(['/TF-:token', '/TF-:token/:name', '/:token/:name'], async (req, res) => {
   try {
-    const token = req.params.token;
+    let tokenParam = req.params.token;
+    // Accept tokens with or without TF- prefix
+    const token = (tokenParam && tokenParam.startsWith('TF-')) ? tokenParam : ('TF-' + tokenParam);
     if (!token) return res.status(400).send('Bad token');
 
     // 1) try file_data blob across pools
