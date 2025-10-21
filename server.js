@@ -73,7 +73,6 @@ let mappings = {};
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
-      // load whatever is on disk as a fallback/seed; it'll be migrated to DB on startup if DBs exist
       mappings = JSON.parse(fs.readFileSync(UPLOAD_JSON, 'utf8') || '{}');
       console.log('Loaded mappings from', UPLOAD_JSON, Object.keys(mappings).length);
     } else {
@@ -86,9 +85,7 @@ function loadMappingsFromDisk() {
   }
 }
 function saveMappingsToDisk() {
-  // IMPORTANT: do NOT persist upload.json when we have working DB pools. Keep upload.json only as a fallback for when no DB.
   if (poolInfos && poolInfos.length) {
-    // noop when DBs available
     return;
   }
   try {
@@ -115,17 +112,16 @@ function safeFileName(name) {
   const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '');
   return (safeBase + safeExt) || 'file';
 }
-
-// New helper: get client ip reliably (x-forwarded-for first)
+// NEW: client IP detection helper (uses X-Forwarded-For when available)
 function getClientIp(req) {
   try {
-    const xf = req.headers['x-forwarded-for'];
-    if (xf && typeof xf === 'string' && xf.length) {
+    const xf = req.headers['x-forwarded-for'] || req.headers['X-Forwarded-For'] || '';
+    if (xf && typeof xf === 'string' && xf.trim()) {
       return xf.split(',')[0].trim();
     }
     if (req.ip) return req.ip;
     if (req.connection && req.connection.remoteAddress) return req.connection.remoteAddress;
-  } catch(e){}
+  } catch (e) {}
   return 'unknown';
 }
 
@@ -157,28 +153,26 @@ function formatTimeHMS(sec) {
 // in-memory watched stats: { token: { userKey: secondsWatched } }
 const watchedStats = {};
 
-// updated log helper for viewing progress and accumulate per-user
+// log helper for viewing progress and accumulate per-user
 function logViewingProgress({ req, token, bytesSent, totalBytes, durationSeconds }) {
   try {
-    const userKey = getClientIp(req) || (req.ip || req.headers['x-forwarded-for'] || 'unknown').toString();
+    const userKey = getClientIp(req);
     // compute percent
     const percent = totalBytes ? Math.round((bytesSent / totalBytes) * 100) : 0;
     let seenSeconds = 0;
     if (durationSeconds && totalBytes) {
-      seenSeconds = Math.round(durationSeconds * (totalBytes ? (bytesSent / totalBytes) : 0));
+      seenSeconds = Math.round(durationSeconds * (bytesSent / totalBytes));
     }
-    // store per-user
+    // accumulate - keep as additive to roughly track total viewed across multiple callbacks
     watchedStats[token] = watchedStats[token] || {};
-    watchedStats[token][userKey] = watchedStats[token][userKey] || 0;
-    // accumulate only if we have seenSeconds > 0
-    if (seenSeconds) watchedStats[token][userKey] = Math.max(watchedStats[token][userKey], seenSeconds);
+    watchedStats[token][userKey] = (watchedStats[token][userKey] || 0) + seenSeconds;
 
     // get totals
-    const totalSeenForUser = watchedStats[token][userKey];
+    const totalSeenForUser = watchedStats[token][userKey] || 0;
     const totalDurationStr = durationSeconds ? formatTimeHMS(durationSeconds) : 'unknown';
     const seenStr = durationSeconds ? `${formatTimeHMS(seenSeconds)}/${totalDurationStr}` : `${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}`;
 
-    // one-line terminal friendly output with percent
+    // one-line terminal friendly output (includes percent and ip)
     console.log(`[TF-STREAM] token=${token} ip=${userKey} sent=${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}    ${percent}% viewed=${seenStr} userTotal=${formatTimeHMS(totalSeenForUser)}`);
   } catch (e) {
     console.warn('logViewingProgress error', e && e.message);
@@ -207,7 +201,6 @@ async function runMigrationsOnPool(pinfo) {
         PRIMARY KEY (token, seq)
       );
     `);
-    // use simple index names to avoid invalid characters
     await client.query(`CREATE INDEX IF NOT EXISTS idx_file_chunks_token ON file_chunks(token);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);`);
     console.log(`DB migration applied for ${pinfo.name}`);
@@ -390,10 +383,8 @@ async function pendingRetryLoop() {
         console.warn('Could not remove upload.json after migration:', e && e.message);
       }
     } else {
-      // no DBs: keep using disk-backed mappings
       saveMappingsToDisk();
     }
-    // start pending retries only once
     pendingRetryLoop();
     console.log('Startup complete. mappings:', Object.keys(mappings).length);
   } catch (err) {
@@ -409,7 +400,6 @@ app.use(cors());
 function safeLog(...args) {
   try { console.log(...args); } catch(e){}
 }
-// quick mapping inspector
 app.get('/_admin/mapping/:token', async (req, res) => {
   const token = req.params.token;
   const out = { token, memory: mappings[token] || null, db: null, chunks: null, file_data_len: null, pending_found: false };
@@ -441,7 +431,7 @@ app.get('/_admin/mappings', (req, res) => {
 });
 app.use((req, res, next) => {
   if (req.path && req.path.startsWith('/TF-')) {
-    safeLog('[TF-REQUEST] path=', req.path, 'ip=', getClientIp(req), 'range=', req.headers.range || 'none');
+    safeLog('[TF-REQUEST] path=', req.path, 'ip=', req.ip || req.headers['x-forwarded-for'] || 'unknown', 'range=', req.headers.range || 'none');
   }
   next();
 });
@@ -469,17 +459,17 @@ const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZ
 function uploadProgressMiddleware(req, res, next) {
   const total = parseInt(req.headers['content-length'] || '0', 10) || 0;
   let received = 0;
-  let lastLogTime = 0;
+  let lastLogTime = Date.now();
   let lastLoggedBytes = 0;
 
   function maybeLog() {
     const now = Date.now();
-    // throttle logs to ~200ms and only if bytes changed enough
-    if (now - lastLogTime < 200 && Math.abs(received - lastLoggedBytes) < 16*1024) return;
+    if (now - lastLogTime < 200 && Math.abs(received - lastLoggedBytes) < 1024*16) return; // throttle
     lastLogTime = now;
     lastLoggedBytes = received;
     const totalStr = total ? fmtBytesLower(total) : 'unknown';
     const pct = total ? Math.round((received / total) * 100) : 0;
+    // format: "0ko/20mo.      0%"
     console.log(`[UPLOAD] ${fmtBytesLower(received)}/${totalStr}    ${pct}%`);
   }
 
@@ -489,7 +479,8 @@ function uploadProgressMiddleware(req, res, next) {
   });
   req.on('end', () => {
     const totalStr = total ? fmtBytesLower(total) : 'unknown';
-    console.log(`[UPLOAD] done ${fmtBytesLower(received)}/${totalStr}    100%`);
+    const pct = total ? Math.round((received / total) * 100) : 100;
+    console.log(`[UPLOAD] done ${fmtBytesLower(received)}/${totalStr}    ${pct}%`);
   });
   next();
 }
@@ -662,12 +653,10 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             'Content-Range': `bytes ${start}-${end}/${fileLen}`,
             'Content-Length': String(chunkLen)
           });
-          // write chunk and log bytes sent (count relative to whole file)
+          // write chunk and log bytes sent
           res.write(chunk);
           res.end();
-          // bytesSent here should represent cumulative bytes delivered in this request.
-          // For range requests we only sent chunkLen — but percent computed vs fileLen is chunkLen/fileLen.
-          logViewingProgress({ req, token, bytesSent: end + 1, totalBytes: fileLen, durationSeconds });
+          logViewingProgress({ req, token, bytesSent: chunkLen, totalBytes: fileLen, durationSeconds });
           return;
         } else {
           res.set({
@@ -743,8 +732,7 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             remainingStart = 0;
           }
           res.end();
-          // bytesSent is start + sent to indicate cumulative position relative to file
-          logViewingProgress({ req, token, bytesSent: start + sent, totalBytes: total, durationSeconds });
+          logViewingProgress({ req, token, bytesSent: sent, totalBytes: total, durationSeconds });
           return;
         }
       }
@@ -787,7 +775,7 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
                 const rs = fs.createReadStream(binPath, { start, end });
                 rs.on('data', (chunk) => { sent += chunk.length; });
                 rs.on('end', () => {
-                  logViewingProgress({ req, token, bytesSent: start + sent, totalBytes: size, durationSeconds });
+                  logViewingProgress({ req, token, bytesSent: sent, totalBytes: size, durationSeconds });
                 });
                 rs.pipe(res);
                 return;
@@ -830,7 +818,6 @@ app.get('/health', (req,res) => res.json({ ok: true }));
 // serve SPA index fallback for non-API GETs (so deep links still load your UI)
 // IMPORTANT: place after API routes to avoid overriding them
 app.get('*', (req, res, next) => {
-  // don't override TF- or API calls
   if (req.path.startsWith('/TF-') || req.path.startsWith('/upload') || req.path.startsWith('/_admin') || req.path.startsWith('/health')) return next();
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
