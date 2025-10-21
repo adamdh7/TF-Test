@@ -1,4 +1,4 @@
-// server.js - multi-DB + Range support + upload/stream progress + IP detection
+// server.js - multi-DB + Range support for blobs, chunks, pending disk + SPA-safe static serving
 require('dotenv').config();
 
 const express = require('express');
@@ -6,27 +6,26 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const compression = require('compression');
+const multer = require('multer');
 const { Pool } = require('pg');
 const { spawnSync } = require('child_process');
-const { Readable } = require('stream');
-const Busboy = require('busboy');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const PENDING_DIR = path.join(UPLOAD_DIR, 'pending');
 
-const CHUNK_MAX_SIZE = Number(process.env.CHUNK_MAX_SIZE || 8 * 1024 * 1024);
-const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024);
+const CHUNK_MAX_SIZE = Number(process.env.CHUNK_MAX_SIZE || 8 * 1024 * 1024); // 8MB default
+const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024); // 5GB
 const RUN_MIGRATIONS_AUTOMATIC = (process.env.RUN_MIGRATIONS_AUTOMATIC || 'true').toLowerCase() === 'true';
 const PG_POOL_MAX = Number(process.env.PG_POOL_MAX || 2);
-const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000;
+const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000; // seconds -> ms
 
 // ensure dirs
 try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); fs.mkdirSync(PENDING_DIR, { recursive: true }); } catch(e){}
 
 // -------------------- pools creation (DATABASE_URL*) --------------------
-let poolInfos = [];
+let poolInfos = []; // array { name, pool, connString }
 function isLikelyConnectionString(s) {
   if (!s || typeof s !== 'string') return false;
   const t = s.trim();
@@ -74,6 +73,7 @@ let mappings = {};
 function loadMappingsFromDisk() {
   try {
     if (fs.existsSync(UPLOAD_JSON)) {
+      // load whatever is on disk as a fallback/seed; it'll be migrated to DB on startup if DBs exist
       mappings = JSON.parse(fs.readFileSync(UPLOAD_JSON, 'utf8') || '{}');
       console.log('Loaded mappings from', UPLOAD_JSON, Object.keys(mappings).length);
     } else {
@@ -86,7 +86,11 @@ function loadMappingsFromDisk() {
   }
 }
 function saveMappingsToDisk() {
-  if (poolInfos && poolInfos.length) return;
+  // IMPORTANT: do NOT persist upload.json when we have working DB pools. Keep upload.json only as a fallback for when no DB.
+  if (poolInfos && poolInfos.length) {
+    // noop when DBs available
+    return;
+  }
   try {
     const tmp = UPLOAD_JSON + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(mappings, null, 2));
@@ -111,11 +115,18 @@ function safeFileName(name) {
   const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '');
   return (safeBase + safeExt) || 'file';
 }
+
+// New helper: get client ip reliably (x-forwarded-for first)
 function getClientIp(req) {
-  const xf = (req.headers['x-forwarded-for'] || '').toString();
-  if (xf) return xf.split(',')[0].trim();
-  if (req.ip) return req.ip;
-  return (req.connection && req.connection.remoteAddress) || 'unknown';
+  try {
+    const xf = req.headers['x-forwarded-for'];
+    if (xf && typeof xf === 'string' && xf.length) {
+      return xf.split(',')[0].trim();
+    }
+    if (req.ip) return req.ip;
+    if (req.connection && req.connection.remoteAddress) return req.connection.remoteAddress;
+  } catch(e){}
+  return 'unknown';
 }
 
 // -------------------- logging & format helpers --------------------
@@ -143,45 +154,38 @@ function formatTimeHMS(sec) {
   return out;
 }
 
-// watchedSeconds per token+user (seconds of media watched)
-// watchedBytesUsed per token+user (last bytes counted) -> to avoid double counting across many progress callbacks
-const watchedSeconds = {}; // { token: { userKey: seconds } }
-const watchedBytesUsed = {}; // { token: { userKey: bytes } }
+// in-memory watched stats: { token: { userKey: secondsWatched } }
+const watchedStats = {};
 
+// updated log helper for viewing progress and accumulate per-user
 function logViewingProgress({ req, token, bytesSent, totalBytes, durationSeconds }) {
   try {
-    const userKey = getClientIp(req);
-    // ensure maps
-    watchedSeconds[token] = watchedSeconds[token] || {};
-    watchedBytesUsed[token] = watchedBytesUsed[token] || {};
-    const prevBytes = watchedBytesUsed[token][userKey] || 0;
-    if (bytesSent <= prevBytes) {
-      // nothing new to count
-      const pct = totalBytes ? Math.round((bytesSent/totalBytes)*100) : 0;
-      console.log(`[TF-STREAM] token=${token} ip=${userKey} sent=${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}    ${pct}%`);
-      return;
-    }
-    // compute new bytes delta
-    watchedBytesUsed[token][userKey] = bytesSent;
-
-    // compute seconds watched from cumulative bytesSent relative to totalBytes and durationSeconds
-    let totalSeenSecs = 0;
+    const userKey = getClientIp(req) || (req.ip || req.headers['x-forwarded-for'] || 'unknown').toString();
+    // compute percent
+    const percent = totalBytes ? Math.round((bytesSent / totalBytes) * 100) : 0;
+    let seenSeconds = 0;
     if (durationSeconds && totalBytes) {
-      totalSeenSecs = Math.round(durationSeconds * (bytesSent / totalBytes));
+      seenSeconds = Math.round(durationSeconds * (totalBytes ? (bytesSent / totalBytes) : 0));
     }
-    const prevSeen = watchedSeconds[token][userKey] || 0;
-    watchedSeconds[token][userKey] = Math.max(prevSeen, totalSeenSecs);
+    // store per-user
+    watchedStats[token] = watchedStats[token] || {};
+    watchedStats[token][userKey] = watchedStats[token][userKey] || 0;
+    // accumulate only if we have seenSeconds > 0
+    if (seenSeconds) watchedStats[token][userKey] = Math.max(watchedStats[token][userKey], seenSeconds);
 
-    const pct = totalBytes ? Math.round((bytesSent/totalBytes)*100) : 0;
-    const durationStr = durationSeconds ? formatTimeHMS(durationSeconds) : 'unknown';
-    const seenStr = durationSeconds ? `${formatTimeHMS(totalSeenSecs)}/${durationStr}` : `${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}`;
-    console.log(`[TF-STREAM] token=${token} ip=${userKey} sent=${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}    ${pct}% viewed=${seenStr} userTotal=${formatTimeHMS(watchedSeconds[token][userKey])}`);
+    // get totals
+    const totalSeenForUser = watchedStats[token][userKey];
+    const totalDurationStr = durationSeconds ? formatTimeHMS(durationSeconds) : 'unknown';
+    const seenStr = durationSeconds ? `${formatTimeHMS(seenSeconds)}/${totalDurationStr}` : `${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}`;
+
+    // one-line terminal friendly output with percent
+    console.log(`[TF-STREAM] token=${token} ip=${userKey} sent=${fmtBytesLower(bytesSent)}/${fmtBytesLower(totalBytes)}    ${percent}% viewed=${seenStr} userTotal=${formatTimeHMS(totalSeenForUser)}`);
   } catch (e) {
     console.warn('logViewingProgress error', e && e.message);
   }
 }
 
-// -------------------- migrations + DB helpers --------------------
+// -------------------- migrations --------------------
 async function runMigrationsOnPool(pinfo) {
   if (!pinfo || !pinfo.pool) return;
   const client = await pinfo.pool.connect().catch(e => { throw new Error(`connect-failed: ${e && e.message}`); });
@@ -203,6 +207,7 @@ async function runMigrationsOnPool(pinfo) {
         PRIMARY KEY (token, seq)
       );
     `);
+    // use simple index names to avoid invalid characters
     await client.query(`CREATE INDEX IF NOT EXISTS idx_file_chunks_token ON file_chunks(token);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);`);
     console.log(`DB migration applied for ${pinfo.name}`);
@@ -215,6 +220,8 @@ async function runMigrationsAll() {
     try { await runMigrationsOnPool(pinfo); } catch (e) { console.warn('Continuing despite migration error on', pinfo.name, e && e.message); }
   }
 }
+
+// -------------------- DB helpers (multi-pool fallback) --------------------
 async function saveChunksToDBAcrossPools(token, buffer) {
   if (!poolInfos.length) throw new Error('No DB pools available');
   let lastErr = null;
@@ -233,7 +240,7 @@ async function saveChunksToDBAcrossPools(token, buffer) {
         client.release();
         return pinfo.name;
       } catch (err) {
-        try { await client.query('ROLLBACK'); } catch(e){}
+        try { await client.query('ROLLBACK'); } catch(e){/*ignore*/ }
         client.release();
         lastErr = err;
         console.warn(`Save chunks to ${pinfo.name} failed:`, err && err.message);
@@ -266,6 +273,7 @@ async function saveMappingMetadataToDBAcrossPools(token, entry) {
   }
   throw lastErr || new Error('All DB pools failed to save metadata');
 }
+
 async function fetchUploadEntryAcrossPools(token) {
   for (const pinfo of poolInfos) {
     try {
@@ -348,6 +356,7 @@ async function pendingRetryLoop() {
 (async () => {
   try {
     if (poolInfos.length && RUN_MIGRATIONS_AUTOMATIC) await runMigrationsAll();
+    // load mappings from DBs (merge newest)
     const dbm = {};
     for (const pinfo of poolInfos) {
       try {
@@ -365,7 +374,9 @@ async function pendingRetryLoop() {
         console.warn('Failed loading mappings from', pinfo.name, err && err.message);
       }
     }
+    // merge DB mappings into memory; DB is authoritative if present
     mappings = Object.assign({}, dbm, mappings);
+    // best-effort persist any remaining local-only entries (from upload.json) into DBs
     if (poolInfos.length) {
       for (const [token, entry] of Object.entries(mappings)) {
         try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('persist local->DB failed for', token, e && e.message); }
@@ -379,8 +390,10 @@ async function pendingRetryLoop() {
         console.warn('Could not remove upload.json after migration:', e && e.message);
       }
     } else {
+      // no DBs: keep using disk-backed mappings
       saveMappingsToDisk();
     }
+    // start pending retries only once
     pendingRetryLoop();
     console.log('Startup complete. mappings:', Object.keys(mappings).length);
   } catch (err) {
@@ -392,8 +405,11 @@ async function pendingRetryLoop() {
 const app = express();
 app.use(cors());
 
-// debug admin
-function safeLog(...args) { try { console.log(...args); } catch(e){} }
+// --- DEBUG / admin helpers (use for troubleshooting) ---
+function safeLog(...args) {
+  try { console.log(...args); } catch(e){}
+}
+// quick mapping inspector
 app.get('/_admin/mapping/:token', async (req, res) => {
   const token = req.params.token;
   const out = { token, memory: mappings[token] || null, db: null, chunks: null, file_data_len: null, pending_found: false };
@@ -430,7 +446,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Do not compress TF- endpoints
+// IMPORTANT CHANGE: do not compress TF- endpoints (video streaming). Use compression.filter but skip paths starting with /TF-
 app.use(compression({
   filter: (req, res) => {
     try {
@@ -441,167 +457,44 @@ app.use(compression({
 }));
 
 app.use(express.json());
+
+// serve static first (index.html is in public)
 app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 
-// -------------------- streaming helper with progress --------------------
-function streamBuffersToRes(buffers, res, req, token, totalBytes, durationSeconds) {
-  const arr = Array.isArray(buffers) ? buffers.slice() : [buffers];
-  const total = totalBytes || arr.reduce((s,b)=>s + b.length, 0);
-  const r = new Readable({
-    read() {
-      while (arr.length) {
-        const chunk = arr.shift();
-        if (!this.push(chunk)) return;
-      }
-      this.push(null);
-    }
-  });
+// multer (memory)
+const multerStorage = multer.memoryStorage();
+const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZE } });
 
-  let sent = 0;
-  let lastLog = 0;
-  r.on('data', (chunk) => {
-    sent += chunk.length;
+// -------------------- upload progress middleware --------------------
+function uploadProgressMiddleware(req, res, next) {
+  const total = parseInt(req.headers['content-length'] || '0', 10) || 0;
+  let received = 0;
+  let lastLogTime = 0;
+  let lastLoggedBytes = 0;
+
+  function maybeLog() {
     const now = Date.now();
-    if (now - lastLog > 400 || sent === total) { // throttle logs to ~400ms
-      logViewingProgress({ req, token, bytesSent: sent, totalBytes: total, durationSeconds });
-      lastLog = now;
-    }
+    // throttle logs to ~200ms and only if bytes changed enough
+    if (now - lastLogTime < 200 && Math.abs(received - lastLoggedBytes) < 16*1024) return;
+    lastLogTime = now;
+    lastLoggedBytes = received;
+    const totalStr = total ? fmtBytesLower(total) : 'unknown';
+    const pct = total ? Math.round((received / total) * 100) : 0;
+    console.log(`[UPLOAD] ${fmtBytesLower(received)}/${totalStr}    ${pct}%`);
+  }
+
+  req.on('data', (chunk) => {
+    received += chunk.length;
+    maybeLog();
   });
-  r.on('end', () => {
-    // final log (ensure 100%)
-    logViewingProgress({ req, token, bytesSent: sent, totalBytes: total, durationSeconds });
+  req.on('end', () => {
+    const totalStr = total ? fmtBytesLower(total) : 'unknown';
+    console.log(`[UPLOAD] done ${fmtBytesLower(received)}/${totalStr}    100%`);
   });
-  r.on('error', (err) => { console.warn('stream error', err && err.message); });
-  r.pipe(res);
+  next();
 }
 
-// -------------------- upload (Busboy streaming) --------------------
-app.post('/upload', (req, res) => {
-  try {
-    const contentLength = parseInt(req.headers['content-length'] || '0', 10) || 0;
-    let receivedTotal = 0;
-    let fileSavedPath = null;
-    let originalName = 'file';
-    let mimeType = 'application/octet-stream';
-    const fields = {};
-
-    const bb = new Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
-
-    // throttle logging
-    let lastLog = 0;
-    function maybeLog() {
-      const now = Date.now();
-      if (now - lastLog < 200 && receivedTotal !== contentLength) return;
-      lastLog = now;
-      const totalStr = contentLength ? fmtBytesLower(contentLength) : 'unknown';
-      const pct = contentLength ? Math.round((receivedTotal / contentLength) * 100) : 0;
-      console.log(`[UPLOAD] ${fmtBytesLower(receivedTotal)}/${totalStr}    ${pct}%`);
-    }
-
-    bb.on('field', (name, val) => {
-      fields[name] = val;
-    });
-
-    bb.on('file', (fieldname, fileStream, filename, encoding, mimetype) => {
-      originalName = filename || originalName;
-      mimeType = mimetype || mimeType;
-      const tmpName = `upload-${Date.now()}-${genToken(6)}${path.extname(originalName) || ''}`;
-      fileSavedPath = path.join(PENDING_DIR, tmpName);
-      const ws = fs.createWriteStream(fileSavedPath);
-      fileStream.on('data', (chunk) => {
-        receivedTotal += chunk.length;
-        maybeLog();
-      });
-      fileStream.on('end', () => {
-        maybeLog();
-      });
-      fileStream.pipe(ws);
-      ws.on('error', (err) => console.error('Write stream error', err && err.message));
-    });
-
-    bb.on('finish', async () => {
-      const totalStr = contentLength ? fmtBytesLower(contentLength) : 'unknown';
-      console.log(`[UPLOAD] done ${fmtBytesLower(receivedTotal)}/${totalStr}    100%`);
-
-      if (!fileSavedPath || !fs.existsSync(fileSavedPath)) {
-        return res.status(400).json({ error: 'No file received' });
-      }
-
-      // read buffer (be mindful for very large files; alternative: stream to DB in-chunks)
-      let buf;
-      try {
-        buf = fs.readFileSync(fileSavedPath);
-      } catch (e) {
-        console.error('Failed to read uploaded file', e && e.message);
-        return res.status(500).json({ error: 'Failed processing uploaded file' });
-      }
-
-      const token = genToken(10);
-      const safeOriginal = safeFileName(originalName);
-      const entry = {
-        token,
-        originalName,
-        safeOriginal,
-        size: buf.length,
-        mime: mimeType,
-        createdAt: new Date().toISOString(),
-        storage: 'db'
-      };
-
-      // probe duration (optional)
-      try {
-        const dur = probeDurationFromBuffer(buf);
-        if (dur && !isNaN(dur)) {
-          entry.duration = Math.round(dur);
-          console.log(`[UPLOAD] probed duration: ${formatTimeHMS(entry.duration)} for token ${token}`);
-        }
-      } catch (e) { console.warn('[UPLOAD] probe failed', e && e.message); }
-
-      // try save to DBs
-      try {
-        const storedOn = await saveChunksToDBAcrossPools(token, buf);
-        try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('metadata save failed', e && e.message); }
-        entry.storage = storedOn;
-        mappings[token] = entry;
-        if (!poolInfos.length) saveMappingsToDisk();
-        try { fs.unlinkSync(fileSavedPath); } catch(e){}
-        const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-        const proto = protoHeader || req.protocol || 'https';
-        const host = req.get('host');
-        const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-        const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
-        const fileUrl = `${origin}${sharePath}`;
-        return res.json({ token, url: fileUrl, sharePath, info: entry });
-      } catch (dbErr) {
-        console.error('Save to all DB pools failed:', dbErr && dbErr.message);
-        try {
-          saveBufferToPending(token, entry, buf);
-          entry.storage = 'pending_disk';
-          mappings[token] = entry;
-          if (!poolInfos.length) saveMappingsToDisk();
-          try { fs.unlinkSync(fileSavedPath); } catch(e){}
-          const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-          const proto = protoHeader || req.protocol || 'https';
-          const host = req.get('host');
-          const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-          const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
-          const fileUrl = `${origin}${sharePath}`;
-          return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
-        } catch (diskErr) {
-          console.error('Disk fallback failed:', diskErr && diskErr.message);
-          return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
-        }
-      }
-    });
-
-    req.pipe(bb);
-  } catch (err) {
-    console.error('Upload error', err && err.message);
-    try { return res.status(500).json({ error: 'Upload failed', details: err && err.message }); } catch(e){}
-  }
-});
-
-// -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
+// -------------------- helper: parse Range header --------------------
 function parseRange(rangeHeader, size) {
   if (!rangeHeader) return null;
   const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
@@ -615,6 +508,7 @@ function parseRange(rangeHeader, size) {
   return { start: s, end: e };
 }
 
+// -------------------- helper: infer mime from filename --------------------
 function inferMimeFromName(name, fallback) {
   if (!name) return fallback || 'application/octet-stream';
   const ext = path.extname(name || '').toLowerCase();
@@ -631,6 +525,7 @@ function inferMimeFromName(name, fallback) {
   return map[ext] || fallback || 'application/octet-stream';
 }
 
+// -------------------- try to probe duration using ffprobe (if available) --------------------
 function probeDurationFromBuffer(buf) {
   const tmp = path.join(PENDING_DIR, `probe-${Date.now()}-${genToken(6)}.tmp`);
   try {
@@ -642,18 +537,91 @@ function probeDurationFromBuffer(buf) {
       if (!isNaN(dur) && dur > 0) return dur;
     }
   } catch (e) {
-    // ignore
+    // ffprobe might not be available — ignore
   } finally {
     try { fs.unlinkSync(tmp); } catch(e){}
   }
   return null;
 }
 
+// ---------- upload ----------
+app.post('/upload', uploadProgressMiddleware, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const token = genToken(10);
+    const originalName = req.file.originalname || 'file';
+    const safeOriginal = safeFileName(originalName);
+    const entry = {
+      token,
+      originalName,
+      safeOriginal,
+      size: req.file.size,
+      mime: req.file.mimetype,
+      createdAt: new Date().toISOString(),
+      storage: 'db'
+    };
+
+    const buf = req.file.buffer;
+
+    // try probe duration (best-effort)
+    try {
+      const dur = probeDurationFromBuffer(buf);
+      if (dur && !isNaN(dur)) {
+        entry.duration = Math.round(dur); // seconds
+        console.log(`[UPLOAD] probed duration: ${formatTimeHMS(entry.duration)} for token ${token}`);
+      }
+    } catch (e) {
+      console.warn('[UPLOAD] ffprobe probe failed', e && e.message);
+    }
+
+    try {
+      const storedOn = await saveChunksToDBAcrossPools(token, buf);
+      try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('metadata save failed', e && e.message); }
+      entry.storage = storedOn;
+      mappings[token] = entry;
+      if (!poolInfos.length) saveMappingsToDisk();
+
+      const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
+      const proto = protoHeader || req.protocol || 'https';
+      const host = req.get('host');
+      const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
+      const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+      const fileUrl = `${origin}${sharePath}`;
+
+      return res.json({ token, url: fileUrl, sharePath, info: entry });
+    } catch (dbErr) {
+      console.error('Save to all DB pools failed:', dbErr && dbErr.message);
+      try {
+        saveBufferToPending(token, entry, buf);
+        entry.storage = 'pending_disk';
+        mappings[token] = entry;
+        if (!poolInfos.length) saveMappingsToDisk();
+        const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
+        const proto = protoHeader || req.protocol || 'https';
+        const host = req.get('host');
+        const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
+        const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+        const fileUrl = `${origin}${sharePath}`;
+        return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
+      } catch (diskErr) {
+        console.error('Disk fallback failed:', diskErr && diskErr.message);
+        return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
+      }
+    }
+  } catch (err) {
+    console.error('Upload error', err && err.message);
+    return res.status(500).json({ error: 'Upload failed', details: err && err.message });
+  }
+});
+
+// -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   try {
     const token = req.params.token;
     if (!token) return res.status(400).send('Bad token');
 
+    // helper to obtain durationSeconds from mappings or DB metadata
     async function getDurationSeconds() {
       try {
         if (mappings[token] && mappings[token].duration) return mappings[token].duration;
@@ -663,7 +631,7 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
       return null;
     }
 
-    // 1) file_data blob
+    // 1) try file_data blob across pools
     try {
       const fileData = await fetchFileDataFromPools(token);
       if (fileData && fileData.buf) {
@@ -674,9 +642,10 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
         const fileLen = buf.length;
         const range = parseRange(req.headers.range, fileLen);
 
+        // common headers
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        res.setHeader('Content-Disposition', 'inline');
+        res.setHeader('Content-Disposition', 'inline'); // <- ensure inline, not attachment
         res.setHeader('Content-Type', mime);
 
         const durationSeconds = await getDurationSeconds();
@@ -688,15 +657,26 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             return;
           }
           const chunk = buf.slice(start, end + 1);
+          const chunkLen = chunk.length;
           res.status(206).set({
             'Content-Range': `bytes ${start}-${end}/${fileLen}`,
-            'Content-Length': String(chunk.length)
+            'Content-Length': String(chunkLen)
           });
-          streamBuffersToRes([chunk], res, req, token, fileLen, durationSeconds);
+          // write chunk and log bytes sent (count relative to whole file)
+          res.write(chunk);
+          res.end();
+          // bytesSent here should represent cumulative bytes delivered in this request.
+          // For range requests we only sent chunkLen — but percent computed vs fileLen is chunkLen/fileLen.
+          logViewingProgress({ req, token, bytesSent: end + 1, totalBytes: fileLen, durationSeconds });
           return;
         } else {
-          res.setHeader('Content-Length', String(fileLen));
-          streamBuffersToRes([buf], res, req, token, fileLen, durationSeconds);
+          res.set({
+            'Content-Length': String(fileLen)
+          });
+          // send whole buffer; count and log
+          res.write(buf);
+          res.end();
+          logViewingProgress({ req, token, bytesSent: fileLen, totalBytes: fileLen, durationSeconds });
           return;
         }
       }
@@ -704,7 +684,7 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
       console.warn('file_data fetch error (non-fatal):', e && e.message);
     }
 
-    // 2) DB chunks
+    // 2) try DB chunks across pools
     try {
       const { rows } = await fetchAllChunksAcrossPools(token);
       if (rows && rows.length) {
@@ -723,8 +703,15 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
         const durationSeconds = await getDurationSeconds();
 
         if (!range) {
+          // stream all sequentially with counting
           res.setHeader('Content-Length', String(total));
-          streamBuffersToRes(chunks, res, req, token, total, durationSeconds);
+          let sent = 0;
+          for (const b of chunks) {
+            res.write(b);
+            sent += b.length;
+          }
+          res.end();
+          logViewingProgress({ req, token, bytesSent: sent, totalBytes: total, durationSeconds });
           return;
         } else {
           const { start, end } = range;
@@ -737,21 +724,27 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             'Content-Range': `bytes ${start}-${end}/${total}`,
             'Content-Length': String(sendLen)
           });
-          // build array of slices to stream
-          const slices = [];
+          // find which chunks and offsets to send, count as we go
           let remainingStart = start;
           let remainingToSend = sendLen;
+          let sent = 0;
           for (let i=0;i<chunks.length && remainingToSend>0;i++) {
             const cl = chunkLens[i];
-            if (remainingStart >= cl) { remainingStart -= cl; continue; }
+            if (remainingStart >= cl) {
+              remainingStart -= cl;
+              continue;
+            }
             const sliceStart = remainingStart;
             const sliceEnd = Math.min(cl - 1, sliceStart + remainingToSend - 1);
             const slice = chunks[i].slice(sliceStart, sliceEnd + 1);
-            slices.push(slice);
+            res.write(slice);
+            sent += slice.length;
             remainingToSend -= (sliceEnd - sliceStart + 1);
             remainingStart = 0;
           }
-          streamBuffersToRes(slices, res, req, token, total, durationSeconds);
+          res.end();
+          // bytesSent is start + sent to indicate cumulative position relative to file
+          logViewingProgress({ req, token, bytesSent: start + sent, totalBytes: total, durationSeconds });
           return;
         }
       }
@@ -789,35 +782,20 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
                   'Content-Range': `bytes ${start}-${end}/${size}`,
                   'Content-Length': String(end - start + 1)
                 });
-                // stream the range with progress counted against size
-                const rs = fs.createReadStream(binPath, { start, end });
+                // count bytes from stream 'data' events
                 let sent = 0;
-                let lastLog = 0;
-                rs.on('data', (chunk) => {
-                  sent += chunk.length;
-                  const now = Date.now();
-                  if (now - lastLog > 400) {
-                    logViewingProgress({ req, token, bytesSent: start + sent, totalBytes: size, durationSeconds });
-                    lastLog = now;
-                  }
-                });
+                const rs = fs.createReadStream(binPath, { start, end });
+                rs.on('data', (chunk) => { sent += chunk.length; });
                 rs.on('end', () => {
                   logViewingProgress({ req, token, bytesSent: start + sent, totalBytes: size, durationSeconds });
                 });
-                return rs.pipe(res);
+                rs.pipe(res);
+                return;
               } else {
                 res.setHeader('Content-Length', String(size));
-                const rs = fs.createReadStream(binPath);
                 let sent = 0;
-                let lastLog = 0;
-                rs.on('data', (chunk) => {
-                  sent += chunk.length;
-                  const now = Date.now();
-                  if (now - lastLog > 400) {
-                    logViewingProgress({ req, token, bytesSent: sent, totalBytes: size, durationSeconds });
-                    lastLog = now;
-                  }
-                });
+                const rs = fs.createReadStream(binPath);
+                rs.on('data', (chunk) => { sent += chunk.length; });
                 rs.on('end', () => {
                   logViewingProgress({ req, token, bytesSent: sent, totalBytes: size, durationSeconds });
                 });
@@ -849,8 +827,10 @@ app.post('/_admin/run-migrations', async (req, res) => {
 // health
 app.get('/health', (req,res) => res.json({ ok: true }));
 
-// SPA fallback
+// serve SPA index fallback for non-API GETs (so deep links still load your UI)
+// IMPORTANT: place after API routes to avoid overriding them
 app.get('*', (req, res, next) => {
+  // don't override TF- or API calls
   if (req.path.startsWith('/TF-') || req.path.startsWith('/upload') || req.path.startsWith('/_admin') || req.path.startsWith('/health')) return next();
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -870,6 +850,7 @@ app.use((err, req, res, next) => {
   next();
 });
 
+// start pending retry loop (already started on startup; keep it safe here)
 pendingRetryLoop();
 
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
