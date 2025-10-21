@@ -1,4 +1,4 @@
-// server.js - multi-DB + Range support for blobs, chunks, pending disk + SPA-safe static serving
+// server.js - backend only - DB-first chunked uploads, terminal progress, Range serving
 require('dotenv').config();
 
 const express = require('express');
@@ -6,25 +6,25 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const compression = require('compression');
-const multer = require('multer');
 const { Pool } = require('pg');
+const Busboy = require('busboy');
 
 const PORT = process.env.PORT || 3000;
-const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
 const PENDING_DIR = path.join(UPLOAD_DIR, 'pending');
 
-const CHUNK_MAX_SIZE = Number(process.env.CHUNK_MAX_SIZE || 8 * 1024 * 1024); // 8MB default
+const CHUNK_MAX_SIZE = Number(process.env.CHUNK_MAX_SIZE || 8 * 1024 * 1024); // 8MB
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024); // 5GB
 const RUN_MIGRATIONS_AUTOMATIC = (process.env.RUN_MIGRATIONS_AUTOMATIC || 'true').toLowerCase() === 'true';
 const PG_POOL_MAX = Number(process.env.PG_POOL_MAX || 2);
-const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000; // seconds -> ms
+const PENDING_RETRY_INTERVAL = Number(process.env.PENDING_RETRY_INTERVAL || 30) * 1000; // ms
+const ENABLE_PENDING_FALLBACK = (process.env.ENABLE_PENDING_FALLBACK === 'true');
 
-// ensure dirs
+// ensure dirs (uploads/pending) exist (safe even on ephemeral deploys)
 try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); fs.mkdirSync(PENDING_DIR, { recursive: true }); } catch(e){}
 
-// -------------------- pools creation (DATABASE_URL*) --------------------
-let poolInfos = []; // array { name, pool, connString }
+// -------------------- DB pools --------------------
+let poolInfos = [];
 function isLikelyConnectionString(s) {
   if (!s || typeof s !== 'string') return false;
   const t = s.trim();
@@ -41,15 +41,9 @@ function createPoolsFromEnv() {
   });
   for (const key of keys) {
     const raw = process.env[key];
-    if (!raw || typeof raw !== 'string' || !raw.trim()) {
-      console.warn(`${key} is empty — skipping.`);
-      continue;
-    }
+    if (!raw || !raw.trim()) continue;
     const conn = raw.trim();
-    if (!isLikelyConnectionString(conn)) {
-      console.warn(`${key} doesn't look like a connection string — skipping.`);
-      continue;
-    }
+    if (!isLikelyConnectionString(conn)) continue;
     const suffix = key === 'DATABASE_URL' ? '' : key.replace('DATABASE_URL','');
     const sslVal = process.env[`DATABASE_SSL${suffix}`] || process.env['DATABASE_SSL'];
     const cfg = { connectionString: conn, max: PG_POOL_MAX };
@@ -63,42 +57,33 @@ function createPoolsFromEnv() {
       console.error(`Failed to create pool for ${key}:`, err && err.message);
     }
   }
-  if (!poolInfos.length) console.warn('No DB pools created - DB operations will fallback to disk.');
+  if (!poolInfos.length) console.warn('No DB pools created - server will reject uploads unless fallback enabled.');
 }
 createPoolsFromEnv();
 
-// -------------------- mappings load/save --------------------
-let mappings = {};
-function loadMappingsFromDisk() {
-  try {
-    if (fs.existsSync(UPLOAD_JSON)) {
-      // load whatever is on disk as a fallback/seed; it'll be migrated to DB on startup if DBs exist
-      mappings = JSON.parse(fs.readFileSync(UPLOAD_JSON, 'utf8') || '{}');
-      console.log('Loaded mappings from', UPLOAD_JSON, Object.keys(mappings).length);
-    } else {
-      mappings = {};
-      console.log('No upload.json found — starting empty mapping.');
+// -------------------- in-memory mappings (no upload.json) --------------------
+let mappings = {}; // token -> metadata (cached from DB on startup)
+async function loadMappingsFromDB() {
+  if (!poolInfos.length) return;
+  const dbm = {};
+  for (const pinfo of poolInfos) {
+    try {
+      const res = await pinfo.pool.query('SELECT token, data, created_at FROM uploads');
+      (res.rows || []).forEach(r => {
+        const existing = dbm[r.token];
+        if (!existing) { dbm[r.token] = r.data; dbm[r.token].createdAt = r.created_at; }
+        else {
+          const existingDate = new Date(existing.createdAt || 0).getTime();
+          const newDate = new Date(r.created_at || 0).getTime();
+          if (newDate >= existingDate) { dbm[r.token] = r.data; dbm[r.token].createdAt = r.created_at; }
+        }
+      });
+    } catch (err) {
+      console.warn('Failed loading mappings from', pinfo.name, err && err.message);
     }
-  } catch (err) {
-    console.warn('Failed loading upload.json:', err && err.message);
-    mappings = {};
   }
+  mappings = Object.assign({}, dbm, mappings);
 }
-function saveMappingsToDisk() {
-  // IMPORTANT: do NOT persist upload.json when we have working DB pools. Keep upload.json only as a fallback for when no DB.
-  if (poolInfos && poolInfos.length) {
-    // noop when DBs available
-    return;
-  }
-  try {
-    const tmp = UPLOAD_JSON + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(mappings, null, 2));
-    fs.renameSync(tmp, UPLOAD_JSON);
-  } catch (err) {
-    console.error('Failed saving upload.json', err && err.message);
-  }
-}
-loadMappingsFromDisk();
 
 // -------------------- helpers --------------------
 function genToken(len = 8) {
@@ -113,6 +98,24 @@ function safeFileName(name) {
   const safeBase = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0,120);
   const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, '');
   return (safeBase + safeExt) || 'file';
+}
+function humanBytes(n) {
+  if (!n && n !== 0) return '0B';
+  if (n === 0) return '0B';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  let v = n;
+  while(v >= 1024 && i < units.length-1){ v /= 1024; i++; }
+  return `${Math.round(v*10)/10}${units[i]}`;
+}
+function humanTimeFromSeconds(s) {
+  if (typeof s !== 'number' || !isFinite(s)) return null;
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = Math.floor(s % 60);
+  if (hrs > 0) return `${hrs}h${mins}m${secs}s`;
+  if (mins > 0) return `${mins}m${secs}s`;
+  return `${secs}s`;
 }
 
 // -------------------- migrations --------------------
@@ -137,7 +140,6 @@ async function runMigrationsOnPool(pinfo) {
         PRIMARY KEY (token, seq)
       );
     `);
-    // use simple index names to avoid invalid characters
     await client.query(`CREATE INDEX IF NOT EXISTS idx_file_chunks_token ON file_chunks(token);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_uploads_created_at ON uploads(created_at);`);
     console.log(`DB migration applied for ${pinfo.name}`);
@@ -151,38 +153,15 @@ async function runMigrationsAll() {
   }
 }
 
-// -------------------- DB helpers (multi-pool fallback) --------------------
-async function saveChunksToDBAcrossPools(token, buffer) {
-  if (!poolInfos.length) throw new Error('No DB pools available');
-  let lastErr = null;
-  for (const pinfo of poolInfos) {
-    try {
-      const client = await pinfo.pool.connect();
-      try {
-        await client.query('BEGIN');
-        let seq = 0;
-        for (let offset=0; offset<buffer.length; offset += CHUNK_MAX_SIZE) {
-          const piece = buffer.slice(offset, Math.min(offset + CHUNK_MAX_SIZE, buffer.length));
-          await client.query('INSERT INTO file_chunks (token, seq, chunk) VALUES ($1,$2,$3)', [token, seq, piece]);
-          seq++;
-        }
-        await client.query('COMMIT');
-        client.release();
-        return pinfo.name;
-      } catch (err) {
-        try { await client.query('ROLLBACK'); } catch(e){/*ignore*/ }
-        client.release();
-        lastErr = err;
-        console.warn(`Save chunks to ${pinfo.name} failed:`, err && err.message);
-        continue;
-      }
-    } catch (err) {
-      lastErr = err;
-      console.warn(`Could not connect to ${pinfo.name}:`, err && err.message);
-      continue;
-    }
+// -------------------- DB helpers --------------------
+async function saveChunkToPool(pinfo, token, seq, buffer) {
+  try {
+    await pinfo.pool.query('INSERT INTO file_chunks (token, seq, chunk) VALUES ($1,$2,$3)', [token, seq, buffer]);
+    return true;
+  } catch (err) {
+    console.warn(`chunk insert failed on ${pinfo.name}:`, err && err.message);
+    return false;
   }
-  throw lastErr || new Error('All DB pools failed to save chunks');
 }
 async function saveMappingMetadataToDBAcrossPools(token, entry) {
   if (!poolInfos.length) return null;
@@ -203,7 +182,17 @@ async function saveMappingMetadataToDBAcrossPools(token, entry) {
   }
   throw lastErr || new Error('All DB pools failed to save metadata');
 }
-
+async function fetchAllChunksAcrossPools(token) {
+  for (const pinfo of poolInfos) {
+    try {
+      const r = await pinfo.pool.query('SELECT seq, chunk FROM file_chunks WHERE token=$1 ORDER BY seq ASC', [token]);
+      if (r.rowCount) return { rows: r.rows, pool: pinfo.name };
+    } catch (err) {
+      console.warn(`fetchAllChunks failed on ${pinfo.name}:`, err && err.message);
+    }
+  }
+  return { rows: [] };
+}
 async function fetchUploadEntryAcrossPools(token) {
   for (const pinfo of poolInfos) {
     try {
@@ -226,26 +215,18 @@ async function fetchFileDataFromPools(token) {
   }
   return null;
 }
-async function fetchAllChunksAcrossPools(token) {
-  for (const pinfo of poolInfos) {
-    try {
-      const r = await pinfo.pool.query('SELECT seq, chunk FROM file_chunks WHERE token=$1 ORDER BY seq ASC', [token]);
-      if (r.rowCount) return { rows: r.rows, pool: pinfo.name };
-    } catch (err) {
-      console.warn(`fetchAllChunks failed on ${pinfo.name}:`, err && err.message);
-    }
-  }
-  return { rows: [] };
-}
 
-// -------------------- pending disk helpers --------------------
-function saveBufferToPending(token, entry, buffer) {
+// -------------------- pending disk helpers (optional fallback) --------------------
+function saveStreamToPendingFileSync(token) {
   const fn = `pending-${token}-${Date.now()}.bin`;
   const filePath = path.join(PENDING_DIR, fn);
-  fs.writeFileSync(filePath, buffer);
-  fs.writeFileSync(path.join(PENDING_DIR, fn + '.json'), JSON.stringify({ token, entry, filename: fn, timestamp: Date.now() }));
-  console.log('Saved pending file to disk for token', token, filePath);
-  return filePath;
+  const ws = fs.createWriteStream(filePath);
+  return { path: filePath, ws, filename: fn };
+}
+function savePendingMetaFileSync(token, entry, pendingBinName) {
+  try {
+    fs.writeFileSync(path.join(PENDING_DIR, pendingBinName + '.json'), JSON.stringify({ token, entry, filename: pendingBinName, timestamp: Date.now() }));
+  } catch(e){ console.warn('savePendingMetaFileSync failed', e && e.message); }
 }
 async function attemptFlushPendingOneToPools(fileBaseName) {
   try {
@@ -253,19 +234,27 @@ async function attemptFlushPendingOneToPools(fileBaseName) {
     const binPath = path.join(PENDING_DIR, fileBaseName);
     if (!fs.existsSync(jsonPath) || !fs.existsSync(binPath)) return false;
     const meta = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-    const buffer = fs.readFileSync(binPath);
-    try {
-      const storedOn = await saveChunksToDBAcrossPools(meta.token, buffer);
-      try { await saveMappingMetadataToDBAcrossPools(meta.token, meta.entry); } catch(e){}
-      fs.unlinkSync(jsonPath); fs.unlinkSync(binPath);
-      console.log('Pending flushed to DB (on ' + storedOn + ') for token', meta.token);
-      return true;
-    } catch (err) {
-      console.warn('Pending flush to DB failed for', fileBaseName, err && err.message);
-      return false;
+    const stream = fs.createReadStream(binPath, { highWaterMark: CHUNK_MAX_SIZE });
+    if (!poolInfos.length) return false;
+    for (const pinfo of poolInfos) {
+      try {
+        let seq = 0;
+        for await (const chunk of stream) {
+          await pinfo.pool.query('INSERT INTO file_chunks (token, seq, chunk) VALUES ($1,$2,$3)', [meta.token, seq, chunk]);
+          seq++;
+        }
+        try { await saveMappingMetadataToDBAcrossPools(meta.token, meta.entry); } catch(e){}
+        fs.unlinkSync(jsonPath); fs.unlinkSync(binPath);
+        console.log('Flushed pending to DB for token', meta.token);
+        return true;
+      } catch (err) {
+        console.warn('Pending flush to DB failed for', fileBaseName, err && err.message);
+        stream.destroy();
+      }
     }
+    return false;
   } catch (err) {
-    console.error('Error in attemptFlushPendingOneToPools', err && err.message);
+    console.error('attemptFlushPendingOneToPools error', err && err.message);
     return false;
   }
 }
@@ -286,47 +275,9 @@ async function pendingRetryLoop() {
 (async () => {
   try {
     if (poolInfos.length && RUN_MIGRATIONS_AUTOMATIC) await runMigrationsAll();
-    // load mappings from DBs (merge newest)
-    const dbm = {};
-    for (const pinfo of poolInfos) {
-      try {
-        const res = await pinfo.pool.query('SELECT token, data, created_at FROM uploads');
-        (res.rows || []).forEach(r => {
-          const existing = dbm[r.token];
-          if (!existing) { dbm[r.token] = r.data; dbm[r.token].createdAt = r.created_at; }
-          else {
-            const existingDate = new Date(existing.createdAt || 0).getTime();
-            const newDate = new Date(r.created_at || 0).getTime();
-            if (newDate >= existingDate) { dbm[r.token] = r.data; dbm[r.token].createdAt = r.created_at; }
-          }
-        });
-      } catch (err) {
-        console.warn('Failed loading mappings from', pinfo.name, err && err.message);
-      }
-    }
-    // merge DB mappings into memory; DB is authoritative if present
-    mappings = Object.assign({}, dbm, mappings);
-    // best-effort persist any remaining local-only entries (from upload.json) into DBs
-    if (poolInfos.length) {
-      for (const [token, entry] of Object.entries(mappings)) {
-        try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('persist local->DB failed for', token, e && e.message); }
-      }
-      // if upload.json exists, remove it now that we've migrated data into DBs
-      try {
-        if (fs.existsSync(UPLOAD_JSON)) {
-          fs.unlinkSync(UPLOAD_JSON);
-          console.log('Removed local upload.json after migrating to DBs');
-        }
-      } catch(e) {
-        console.warn('Could not remove upload.json after migration:', e && e.message);
-      }
-    } else {
-      // no DBs: keep using disk-backed mappings
-      saveMappingsToDisk();
-    }
-    // start pending retries only once
-    pendingRetryLoop();
-    console.log('Startup complete. mappings:', Object.keys(mappings).length);
+    await loadMappingsFromDB();
+    if (ENABLE_PENDING_FALLBACK) pendingRetryLoop();
+    console.log('Startup complete. mappings loaded:', Object.keys(mappings).length);
   } catch (err) {
     console.error('Startup error:', err && err.message);
   }
@@ -335,15 +286,19 @@ async function pendingRetryLoop() {
 // -------------------- express app --------------------
 const app = express();
 app.use(cors());
+app.use(express.json());
+app.use(compression({
+  filter: (req, res) => {
+    try { if (req && req.path && req.path.startsWith('/TF-')) return false; } catch(e){}
+    return compression.filter(req, res);
+  }
+}));
+app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 
-// --- DEBUG / admin helpers (use for troubleshooting) ---
-function safeLog(...args) {
-  try { console.log(...args); } catch(e){}
-}
-// quick mapping inspector
+// admin mapping inspector
 app.get('/_admin/mapping/:token', async (req, res) => {
   const token = req.params.token;
-  const out = { token, memory: mappings[token] || null, db: null, chunks: null, file_data_len: null, pending_found: false };
+  const out = { token, memory: mappings[token] || null, db: null, chunks: null, pending_found: false };
   try {
     for (const pinfo of poolInfos) {
       try {
@@ -367,111 +322,185 @@ app.get('/_admin/mapping/:token', async (req, res) => {
   } catch(e){}
   return res.json(out);
 });
-app.get('/_admin/mappings', (req, res) => {
-  return res.json({ count: Object.keys(mappings).length, tokens: Object.keys(mappings).slice(0,50) });
-});
-// instrument TF route entry so we can see incoming request info
-app.use((req, res, next) => {
-  if (req.path && req.path.startsWith('/TF-')) {
-    safeLog('[TF-REQUEST] path=', req.path, 'ip=', req.ip || req.headers['x-forwarded-for'] || 'unknown', 'range=', req.headers.range || 'none');
-  }
-  next();
-});
+app.get('/_admin/mappings', (req, res) => res.json({ count: Object.keys(mappings).length, tokens: Object.keys(mappings).slice(0,50) }));
 
-// IMPORTANT CHANGE: do not compress TF- endpoints (video streaming). Use compression.filter but skip paths starting with /TF-
-app.use(compression({
-  filter: (req, res) => {
-    try {
-      if (req && req.path && req.path.startsWith('/TF-')) return false;
-    } catch(e){}
-    return compression.filter(req, res);
-  }
-}));
-
-app.use(express.json());
-
-// serve static first (index.html is in public)
-app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
-
-// multer (memory)
-const multerStorage = multer.memoryStorage();
-const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZE } });
-
-// ---------- upload ----------
-app.post('/upload', upload.single('file'), async (req, res) => {
+// -------------------- upload (streaming with Busboy) --------------------
+app.post('/upload', (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!poolInfos.length && !ENABLE_PENDING_FALLBACK) {
+      return res.status(503).json({ error: 'No DB available. Enable pending fallback or provide DB.' });
+    }
 
-    const token = genToken(10);
-    const originalName = req.file.originalname || 'file';
-    const safeOriginal = safeFileName(originalName);
-    const entry = {
-      token,
-      originalName,
-      safeOriginal,
-      size: req.file.size,
-      mime: req.file.mimetype,
-      createdAt: new Date().toISOString(),
-      storage: 'db'
-    };
+    const bb = new Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
+    const token = 'TF-' + genToken(7);
+    let fileName = null;
+    let safeName = null;
+    let mime = null;
+    let receivedBytes = 0;
+    let seq = 0;
+    let storingToDB = poolInfos.length > 0;
+    let primaryPool = poolInfos.length ? poolInfos[0] : null;
+    let pendingWriter = null;
+    let pendingBinName = null;
+    let entry = { token, originalName: null, safeOriginal: null, size: null, mime: null, createdAt: new Date().toISOString(), storage: storingToDB ? 'db' : 'pending_disk' };
+    let totalBytesExpected = Number(req.headers['content-length'] || 0);
 
-    const buf = req.file.buffer;
-    try {
-      const storedOn = await saveChunksToDBAcrossPools(token, buf);
-      try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('metadata save failed', e && e.message); }
-      entry.storage = storedOn;
-      mappings[token] = entry;
-      // only persist to disk when there are NO DB pools
-      if (!poolInfos.length) saveMappingsToDisk();
+    function logProgress() {
+      const humanGot = humanBytes(receivedBytes);
+      const humanTotal = totalBytesExpected ? humanBytes(totalBytesExpected) : 'unknown';
+      const pct = totalBytesExpected ? Math.round((receivedBytes / totalBytesExpected) * 100) : null;
+      const pctStr = pct !== null ? ` (${pct}%)` : '';
+      process.stdout.write(`\r${token} ${humanGot}/${humanTotal}${pctStr}`);
+    }
 
-      const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-      const proto = protoHeader || req.protocol || 'https';
-      const host = req.get('host');
-      const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-      const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
-      const fileUrl = `${origin}${sharePath}`;
+    bb.on('file', (fieldname, file, filename, encoding, mimetype) => {
+      fileName = filename || 'file';
+      safeName = safeFileName(fileName);
+      mime = mimetype || 'application/octet-stream';
+      entry.originalName = fileName;
+      entry.safeOriginal = safeName;
+      entry.mime = mime;
 
-      return res.json({ token, url: fileUrl, sharePath, info: entry });
-    } catch (dbErr) {
-      console.error('Save to all DB pools failed:', dbErr && dbErr.message);
-      try {
-        saveBufferToPending(token, entry, buf);
-        entry.storage = 'pending_disk';
-        mappings[token] = entry;
-        if (!poolInfos.length) saveMappingsToDisk();
+      // prepare pending writer only if fallback enabled
+      if (!storingToDB && ENABLE_PENDING_FALLBACK) {
+        const pending = saveStreamToPendingFileSync(token);
+        pendingWriter = pending.ws;
+        pendingBinName = pending.filename;
+      }
+
+      file.on('data', async (data) => {
+        // break into CHUNK_MAX_SIZE pieces
+        for (let off=0; off < data.length; off += CHUNK_MAX_SIZE) {
+          const piece = data.slice(off, Math.min(off + CHUNK_MAX_SIZE, data.length));
+          // try DB insert if chosen
+          if (storingToDB && primaryPool) {
+            try {
+              await primaryPool.pool.query('INSERT INTO file_chunks (token, seq, chunk) VALUES ($1,$2,$3)', [token, seq, piece]);
+            } catch (err) {
+              console.warn('DB insert chunk failed mid-upload:', err && err.message);
+              storingToDB = false;
+              entry.storage = 'pending_disk';
+              if (ENABLE_PENDING_FALLBACK) {
+                if (!pendingWriter) {
+                  const pend = saveStreamToPendingFileSync(token);
+                  pendingWriter = pend.ws;
+                  pendingBinName = pend.filename;
+                }
+                // write this piece to pending
+                try { pendingWriter.write(piece); } catch(e){ console.error('Pending write failed', e && e.message); }
+              } else {
+                // Stop upload and respond error (DB full / not accepting)
+                try { file.unpipe(); } catch(e){}
+                console.error('Upload aborted: DB failure and pending fallback disabled.');
+                return res.status(507).json({ error: 'Storage insufficient on DB; upload aborted.' });
+              }
+            }
+          } else {
+            // write to pending disk
+            if (!ENABLE_PENDING_FALLBACK) {
+              console.error('Pending fallback disabled but DB not available - aborting.');
+              try { file.unpipe(); } catch(e){}
+              return res.status(507).json({ error: 'Storage insufficient; pending fallback disabled.' });
+            }
+            try { pendingWriter.write(piece); } catch(e){ console.error('Failed writing pending', e && e.message); }
+          }
+          seq++;
+          receivedBytes += piece.length;
+        }
+        logProgress();
+      });
+
+      file.on('end', async () => {
+        entry.size = receivedBytes;
+        // save metadata
+        try {
+          if (storingToDB) {
+            await saveMappingMetadataToDBAcrossPools(token, entry);
+            mappings[token] = entry;
+          } else {
+            // pending writer close + meta file
+            if (pendingWriter) { pendingWriter.end(); savePendingMetaFileSync(token, entry, pendingBinName); }
+            mappings[token] = entry;
+          }
+        } catch (err) {
+          console.warn('Post-upload metadata save failed:', err && err.message);
+          // if metadata failed and we used DB chunks, leave chunks there — admin can inspect later
+          if (!storingToDB && pendingWriter) pendingWriter.end();
+        }
+
+        process.stdout.write(`\r${token} ${humanBytes(receivedBytes)}/${(totalBytesExpected?humanBytes(totalBytesExpected):humanBytes(receivedBytes))}\n`);
+
         const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
         const proto = protoHeader || req.protocol || 'https';
         const host = req.get('host');
         const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-        const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+        const sharePath = `/${token}/${encodeURIComponent(safeName)}`;
         const fileUrl = `${origin}${sharePath}`;
-        return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
-      } catch (diskErr) {
-        console.error('Disk fallback failed:', diskErr && diskErr.message);
-        return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
+
+        return res.json({ token, url: fileUrl, sharePath, info: entry });
+      });
+
+      file.on('error', (err) => {
+        console.error('Upload file stream error', err && err.message);
+      });
+    });
+
+    bb.on('field', (name, val) => {
+      // optional extra fields (durationSeconds)
+      if (name === 'durationSeconds') {
+        try { entry.durationSeconds = Number(val); } catch(e){}
       }
-    }
+    });
+
+    bb.on('finish', () => {
+      // nothing to do here; response already sent in 'end' handler
+    });
+
+    bb.on('error', (err) => {
+      console.error('Busboy error', err && err.message);
+      try { res.status(500).json({ error: 'Upload parse failed', details: err && err.message }); } catch(e){}
+    });
+
+    req.pipe(bb);
   } catch (err) {
-    console.error('Upload error', err && err.message);
+    console.error('Upload handler error', err && err.message);
     return res.status(500).json({ error: 'Upload failed', details: err && err.message });
   }
 });
 
-// -------------------- helper: parse Range header --------------------
+// -------------------- parse Range (fixed) --------------------
 function parseRange(rangeHeader, size) {
   if (!rangeHeader) return null;
-  const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+  const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader.trim());
   if (!m) return null;
-  const start = m[1] === '' ? null : parseInt(m[1], 10);
-  const end = m[2] === '' ? null : parseInt(m[2], 10);
-  if (start === null && end === null) return null;
-  const s = start !== null ? start : (size - (end + 1));
-  const e = end !== null ? end : (size - 1);
-  if (isNaN(s) || isNaN(e) || s > e || s < 0) return null;
-  return { start: s, end: e };
+  const startStr = m[1];
+  const endStr = m[2];
+
+  if (startStr === '' && endStr !== '') {
+    const lastN = parseInt(endStr, 10);
+    if (isNaN(lastN) || lastN <= 0) return null;
+    const start = Math.max(0, size - lastN);
+    const end = size - 1;
+    if (start > end) return null;
+    return { start, end };
+  }
+  if (startStr !== '' && endStr === '') {
+    const start = parseInt(startStr, 10);
+    if (isNaN(start) || start < 0 || start >= size) return null;
+    const end = size - 1;
+    return { start, end };
+  }
+  if (startStr !== '' && endStr !== '') {
+    let start = parseInt(startStr, 10);
+    let end = parseInt(endStr, 10);
+    if (isNaN(start) || isNaN(end) || start < 0 || end < 0 || start > end) return null;
+    if (start >= size) return null;
+    return { start: start, end: Math.min(end, size - 1) };
+  }
+  return null;
 }
 
-// -------------------- helper: infer mime from filename --------------------
+// -------------------- infer mime --------------------
 function inferMimeFromName(name, fallback) {
   if (!name) return fallback || 'application/octet-stream';
   const ext = path.extname(name || '').toLowerCase();
@@ -488,62 +517,68 @@ function inferMimeFromName(name, fallback) {
   return map[ext] || fallback || 'application/octet-stream';
 }
 
-// -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
-app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
+// -------------------- serve TF token (Range aware for chunks/pending) --------------------
+app.get(['/TF-:token', '/TF-:token/:name', '/:token/:name'], async (req, res) => {
   try {
-    const token = req.params.token;
+    const rawToken = req.params.token;
+    const token = rawToken && rawToken.startsWith('TF-') ? rawToken : ('TF-' + rawToken);
     if (!token) return res.status(400).send('Bad token');
 
-    // 1) try file_data blob across pools
+    // try DB file_data (rare)
     try {
-      const fileData = await fetchFileDataFromPools(token);
-      if (fileData && fileData.buf) {
-        const buf = fileData.buf;
-        const meta = await fetchUploadEntryAcrossPools(token);
-        let mime = (meta && meta.data && meta.data.mime) || (mappings[token] && mappings[token].mime) || null;
-        mime = inferMimeFromName(req.params.name || (meta && meta.data && meta.data.safeOriginal) || (mappings[token] && mappings[token].safeOriginal), mime);
-        const fileLen = buf.length;
-        const range = parseRange(req.headers.range, fileLen);
+      for (const pinfo of poolInfos) {
+        try {
+          const r = await pinfo.pool.query('SELECT data, (file_data IS NOT NULL) AS has_file, octet_length(file_data) AS file_len FROM uploads WHERE token=$1', [token]);
+          if (r.rowCount && r.rows[0] && r.rows[0].has_file && r.rows[0].file_len) {
+            const meta = r.rows[0].data || mappings[token] || {};
+            const r2 = await pinfo.pool.query('SELECT file_data FROM uploads WHERE token=$1', [token]);
+            const buf = r2.rows[0].file_data;
+            const mime = inferMimeFromName(req.params.name || meta.safeOriginal, meta.mime);
+            const fileLen = buf.length;
+            const range = parseRange(req.headers.range, fileLen);
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            res.setHeader('Content-Disposition', 'inline');
+            res.setHeader('Content-Type', mime);
 
-        // common headers
-        res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        res.setHeader('Content-Disposition', 'inline'); // <- ensure inline, not attachment
-        res.setHeader('Content-Type', mime);
-
-        if (range) {
-          const { start, end } = range;
-          if (start >= fileLen || end >= fileLen) {
-            res.status(416).set('Content-Range', `bytes */${fileLen}`).end();
-            return;
+            if (range) {
+              const { start, end } = range;
+              if (start >= fileLen || end >= fileLen) { res.status(416).set('Content-Range', `bytes */${fileLen}`).end(); return; }
+              const chunk = buf.slice(start, end + 1);
+              res.status(206).set({
+                'Content-Range': `bytes ${start}-${end}/${fileLen}`,
+                'Content-Length': String(chunk.length)
+              });
+              // helpful headers for UI
+              res.setHeader('X-TF-PLAYED-BYTES', String(start));
+              res.setHeader('X-TF-TOTAL-BYTES', String(fileLen));
+              if (meta && meta.durationSeconds) {
+                const playedSec = Math.round((start / fileLen) * meta.durationSeconds);
+                res.setHeader('X-TF-PLAYED-SEC', String(playedSec));
+                res.setHeader('X-TF-TOTAL-SEC', String(meta.durationSeconds));
+              }
+              return res.send(chunk);
+            } else {
+              res.setHeader('Content-Length', String(fileLen));
+              res.setHeader('X-TF-PLAYED-BYTES', '0');
+              res.setHeader('X-TF-TOTAL-BYTES', String(fileLen));
+              return res.send(buf);
+            }
           }
-          const chunk = buf.slice(start, end + 1);
-          res.status(206).set({
-            'Content-Range': `bytes ${start}-${end}/${fileLen}`,
-            'Content-Length': String(chunk.length)
-          });
-          return res.send(chunk);
-        } else {
-          res.set({
-            'Content-Length': String(fileLen)
-          });
-          return res.send(buf);
-        }
+        } catch(e){ continue; }
       }
-    } catch (e) {
-      console.warn('file_data fetch error (non-fatal):', e && e.message);
-    }
+    } catch(e){}
 
-    // 2) try DB chunks across pools
+    // try DB chunks
     try {
-      const { rows } = await fetchAllChunksAcrossPools(token);
+      const fetched = await fetchAllChunksAcrossPools(token);
+      const rows = fetched.rows || [];
       if (rows && rows.length) {
-        // compute total length and per-chunk offsets
         const chunks = rows.map(r => Buffer.from(r.chunk));
         const chunkLens = chunks.map(b => b.length);
         const total = chunkLens.reduce((a,b)=>a+b,0);
-        let mime = (mappings[token] && mappings[token].mime) || null;
-        mime = inferMimeFromName(req.params.name || (mappings[token] && mappings[token].safeOriginal), mime);
+        const meta = mappings[token] || null;
+        const mime = inferMimeFromName(req.params.name || (meta && meta.safeOriginal), meta && meta.mime);
 
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -551,33 +586,32 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
         res.setHeader('Content-Type', mime);
 
         const range = parseRange(req.headers.range, total);
+        const startByte = range ? range.start : 0;
+        res.setHeader('X-TF-PLAYED-BYTES', String(startByte));
+        res.setHeader('X-TF-TOTAL-BYTES', String(total));
+        if (meta && meta.durationSeconds) {
+          const playedSec = Math.round((startByte / total) * meta.durationSeconds);
+          res.setHeader('X-TF-PLAYED-SEC', String(playedSec));
+          res.setHeader('X-TF-TOTAL-SEC', String(meta.durationSeconds));
+        }
 
         if (!range) {
-          // stream all sequentially
           res.setHeader('Content-Length', String(total));
           for (const b of chunks) res.write(b);
           return res.end();
         } else {
           const { start, end } = range;
-          if (start >= total || end >= total) {
-            res.status(416).set('Content-Range', `bytes */${total}`).end();
-            return;
-          }
+          if (start >= total || end >= total) { res.status(416).set('Content-Range', `bytes */${total}`).end(); return; }
           const sendLen = end - start + 1;
           res.status(206).set({
             'Content-Range': `bytes ${start}-${end}/${total}`,
             'Content-Length': String(sendLen)
           });
-          // find which chunks and offsets to send
           let remainingStart = start;
           let remainingToSend = sendLen;
           for (let i=0;i<chunks.length && remainingToSend>0;i++) {
             const cl = chunkLens[i];
-            if (remainingStart >= cl) {
-              remainingStart -= cl;
-              continue;
-            }
-            // send from this chunk
+            if (remainingStart >= cl) { remainingStart -= cl; continue; }
             const sliceStart = remainingStart;
             const sliceEnd = Math.min(cl - 1, sliceStart + remainingToSend - 1);
             const slice = chunks[i].slice(sliceStart, sliceEnd + 1);
@@ -588,11 +622,9 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
           return res.end();
         }
       }
-    } catch (e) {
-      console.warn('chunks fetch error (non-fatal):', e && e.message);
-    }
+    } catch(e){}
 
-    // 3) pending disk
+    // pending disk (fallback)
     try {
       const jsonFiles = fs.readdirSync(PENDING_DIR).filter(f => f.endsWith('.json'));
       for (const jf of jsonFiles) {
@@ -606,12 +638,20 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
               const size = stat.size;
               let mime = (meta.entry && meta.entry.mime) || null;
               mime = inferMimeFromName(req.params.name || (meta.entry && meta.entry.safeOriginal), mime);
-
               const range = parseRange(req.headers.range, size);
               res.setHeader('Accept-Ranges', 'bytes');
               res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
               res.setHeader('Content-Type', mime);
               res.setHeader('Content-Disposition', 'inline');
+
+              const startByte = range ? range.start : 0;
+              res.setHeader('X-TF-PLAYED-BYTES', String(startByte));
+              res.setHeader('X-TF-TOTAL-BYTES', String(size));
+              if (meta.entry && meta.entry.durationSeconds) {
+                const playedSec = Math.round((startByte / size) * meta.entry.durationSeconds);
+                res.setHeader('X-TF-PLAYED-SEC', String(playedSec));
+                res.setHeader('X-TF-TOTAL-SEC', String(meta.entry.durationSeconds));
+              }
 
               if (range) {
                 const { start, end } = range;
@@ -639,7 +679,28 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   }
 });
 
-// ---------- admin migrations ----------
+// meta endpoint
+app.get(['/TF-:token/meta','/:token/meta'], async (req, res) => {
+  const rawToken = req.params.token;
+  const token = rawToken && rawToken.startsWith('TF-') ? rawToken : ('TF-' + rawToken);
+  const meta = mappings[token] || null;
+  let dbInfo = null;
+  if (poolInfos.length) {
+    for (const pinfo of poolInfos) {
+      try {
+        const r = await pinfo.pool.query('SELECT data, (file_data IS NOT NULL) AS has_file, octet_length(file_data) AS file_len FROM uploads WHERE token=$1', [token]);
+        if (r.rowCount) { dbInfo = r.rows[0]; break; }
+      } catch(e){}
+    }
+  }
+  if (!meta && !dbInfo) return res.status(404).json({ error: 'Not found' });
+  const out = Object.assign({}, meta || (dbInfo && dbInfo.data) || {});
+  if (dbInfo && dbInfo.file_len) out.file_data_len = dbInfo.file_len;
+  if (out.durationSeconds) out.durationHuman = humanTimeFromSeconds(out.durationSeconds);
+  return res.json(out);
+});
+
+// admin run migrations
 app.post('/_admin/run-migrations', async (req, res) => {
   try {
     await runMigrationsAll();
@@ -652,10 +713,8 @@ app.post('/_admin/run-migrations', async (req, res) => {
 // health
 app.get('/health', (req,res) => res.json({ ok: true }));
 
-// serve SPA index fallback for non-API GETs (so deep links still load your UI)
-// IMPORTANT: place after API routes to avoid overriding them
+// SPA fallback
 app.get('*', (req, res, next) => {
-  // don't override TF- or API calls
   if (req.path.startsWith('/TF-') || req.path.startsWith('/upload') || req.path.startsWith('/_admin') || req.path.startsWith('/health')) return next();
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -675,7 +734,7 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// start pending retry loop (already started on startup; keep it safe here)
-pendingRetryLoop();
+process.on('SIGINT', () => { console.log('SIGINT, exiting'); process.exit(0); });
+process.on('SIGTERM', () => { console.log('SIGTERM, exiting'); process.exit(0); });
 
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
