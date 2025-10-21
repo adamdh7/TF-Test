@@ -6,10 +6,10 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const compression = require('compression');
-const multer = require('multer');
 const { Pool } = require('pg');
 const { spawnSync } = require('child_process');
 const { Readable } = require('stream');
+const Busboy = require('busboy');
 
 const PORT = process.env.PORT || 3000;
 const UPLOAD_JSON = process.env.UPLOAD_JSON || path.join(__dirname, 'upload.json');
@@ -162,7 +162,6 @@ function logViewingProgress({ req, token, bytesSent, totalBytes, durationSeconds
       return;
     }
     // compute new bytes delta
-    const delta = bytesSent - prevBytes;
     watchedBytesUsed[token][userKey] = bytesSent;
 
     // compute seconds watched from cumulative bytesSent relative to totalBytes and durationSeconds
@@ -171,7 +170,6 @@ function logViewingProgress({ req, token, bytesSent, totalBytes, durationSeconds
       totalSeenSecs = Math.round(durationSeconds * (bytesSent / totalBytes));
     }
     const prevSeen = watchedSeconds[token][userKey] || 0;
-    const deltaSeen = Math.max(0, totalSeenSecs - prevSeen);
     watchedSeconds[token][userKey] = Math.max(prevSeen, totalSeenSecs);
 
     const pct = totalBytes ? Math.round((bytesSent/totalBytes)*100) : 0;
@@ -183,7 +181,7 @@ function logViewingProgress({ req, token, bytesSent, totalBytes, durationSeconds
   }
 }
 
-// -------------------- migrations + DB helpers (kept same as earlier) --------------------
+// -------------------- migrations + DB helpers --------------------
 async function runMigrationsOnPool(pinfo) {
   if (!pinfo || !pinfo.pool) return;
   const client = await pinfo.pool.connect().catch(e => { throw new Error(`connect-failed: ${e && e.message}`); });
@@ -445,86 +443,6 @@ app.use(compression({
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html' }));
 
-const multerStorage = multer.memoryStorage();
-const upload = multer({ storage: multerStorage, limits: { fileSize: MAX_FILE_SIZE } });
-
-// -------------------- upload progress middleware (shows bytes and percent) --------------------
-function uploadProgressMiddleware(req, res, next) {
-  const total = parseInt(req.headers['content-length'] || '0', 10) || 0;
-  let received = 0;
-  let lastLogTime = 0;
-
-  function maybeLog() {
-    const now = Date.now();
-    if (now - lastLogTime < 200 && received !== total) return; // throttle
-    lastLogTime = now;
-    const totalStr = total ? fmtBytesLower(total) : 'unknown';
-    const pct = total ? Math.round((received / total) * 100) : 0;
-    // format: "0ko/20mo.      0%"
-    console.log(`[UPLOAD] ${fmtBytesLower(received)}/${totalStr}    ${pct}%`);
-  }
-
-  req.on('data', (chunk) => {
-    received += chunk.length;
-    maybeLog();
-  });
-  req.on('end', () => {
-    const totalStr = total ? fmtBytesLower(total) : 'unknown';
-    console.log(`[UPLOAD] done ${fmtBytesLower(received)}/${totalStr}    100%`);
-  });
-  next();
-}
-
-// -------------------- helper: parse Range header --------------------
-function parseRange(rangeHeader, size) {
-  if (!rangeHeader) return null;
-  const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
-  if (!m) return null;
-  const start = m[1] === '' ? null : parseInt(m[1], 10);
-  const end = m[2] === '' ? null : parseInt(m[2], 10);
-  if (start === null && end === null) return null;
-  const s = start !== null ? start : (size - (end + 1));
-  const e = end !== null ? end : (size - 1);
-  if (isNaN(s) || isNaN(e) || s > e || s < 0) return null;
-  return { start: s, end: e };
-}
-
-// -------------------- helper: infer mime from filename --------------------
-function inferMimeFromName(name, fallback) {
-  if (!name) return fallback || 'application/octet-stream';
-  const ext = path.extname(name || '').toLowerCase();
-  const map = {
-    '.mp4': 'video/mp4',
-    '.m4v': 'video/mp4',
-    '.webm': 'video/webm',
-    '.ogg': 'video/ogg',
-    '.ogv': 'video/ogg',
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.mov': 'video/quicktime'
-  };
-  return map[ext] || fallback || 'application/octet-stream';
-}
-
-// -------------------- try to probe duration using ffprobe (if available) --------------------
-function probeDurationFromBuffer(buf) {
-  const tmp = path.join(PENDING_DIR, `probe-${Date.now()}-${genToken(6)}.tmp`);
-  try {
-    fs.writeFileSync(tmp, buf);
-    const out = spawnSync('ffprobe', ['-v','quiet','-print_format','json','-show_format', tmp], { encoding:'utf8', timeout: 7000 });
-    if (out && out.status === 0 && out.stdout) {
-      const j = JSON.parse(out.stdout);
-      const dur = j && j.format && parseFloat(j.format.duration);
-      if (!isNaN(dur) && dur > 0) return dur;
-    }
-  } catch (e) {
-    // ignore
-  } finally {
-    try { fs.unlinkSync(tmp); } catch(e){}
-  }
-  return null;
-}
-
 // -------------------- streaming helper with progress --------------------
 function streamBuffersToRes(buffers, res, req, token, totalBytes, durationSeconds) {
   const arr = Array.isArray(buffers) ? buffers.slice() : [buffers];
@@ -557,75 +475,180 @@ function streamBuffersToRes(buffers, res, req, token, totalBytes, durationSecond
   r.pipe(res);
 }
 
-// -------------------- upload endpoint --------------------
-app.post('/upload', uploadProgressMiddleware, upload.single('file'), async (req, res) => {
+// -------------------- upload (Busboy streaming) --------------------
+app.post('/upload', (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const contentLength = parseInt(req.headers['content-length'] || '0', 10) || 0;
+    let receivedTotal = 0;
+    let fileSavedPath = null;
+    let originalName = 'file';
+    let mimeType = 'application/octet-stream';
+    const fields = {};
 
-    const token = genToken(10);
-    const originalName = req.file.originalname || 'file';
-    const safeOriginal = safeFileName(originalName);
-    const entry = {
-      token,
-      originalName,
-      safeOriginal,
-      size: req.file.size,
-      mime: req.file.mimetype,
-      createdAt: new Date().toISOString(),
-      storage: 'db'
-    };
+    const bb = new Busboy({ headers: req.headers, limits: { fileSize: MAX_FILE_SIZE } });
 
-    const buf = req.file.buffer;
+    // throttle logging
+    let lastLog = 0;
+    function maybeLog() {
+      const now = Date.now();
+      if (now - lastLog < 200 && receivedTotal !== contentLength) return;
+      lastLog = now;
+      const totalStr = contentLength ? fmtBytesLower(contentLength) : 'unknown';
+      const pct = contentLength ? Math.round((receivedTotal / contentLength) * 100) : 0;
+      console.log(`[UPLOAD] ${fmtBytesLower(receivedTotal)}/${totalStr}    ${pct}%`);
+    }
 
-    try {
-      const dur = probeDurationFromBuffer(buf);
-      if (dur && !isNaN(dur)) {
-        entry.duration = Math.round(dur);
-        console.log(`[UPLOAD] probed duration: ${formatTimeHMS(entry.duration)} for token ${token}`);
+    bb.on('field', (name, val) => {
+      fields[name] = val;
+    });
+
+    bb.on('file', (fieldname, fileStream, filename, encoding, mimetype) => {
+      originalName = filename || originalName;
+      mimeType = mimetype || mimeType;
+      const tmpName = `upload-${Date.now()}-${genToken(6)}${path.extname(originalName) || ''}`;
+      fileSavedPath = path.join(PENDING_DIR, tmpName);
+      const ws = fs.createWriteStream(fileSavedPath);
+      fileStream.on('data', (chunk) => {
+        receivedTotal += chunk.length;
+        maybeLog();
+      });
+      fileStream.on('end', () => {
+        maybeLog();
+      });
+      fileStream.pipe(ws);
+      ws.on('error', (err) => console.error('Write stream error', err && err.message));
+    });
+
+    bb.on('finish', async () => {
+      const totalStr = contentLength ? fmtBytesLower(contentLength) : 'unknown';
+      console.log(`[UPLOAD] done ${fmtBytesLower(receivedTotal)}/${totalStr}    100%`);
+
+      if (!fileSavedPath || !fs.existsSync(fileSavedPath)) {
+        return res.status(400).json({ error: 'No file received' });
       }
-    } catch (e) { console.warn('[UPLOAD] probe failed', e && e.message); }
 
-    try {
-      const storedOn = await saveChunksToDBAcrossPools(token, buf);
-      try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('metadata save failed', e && e.message); }
-      entry.storage = storedOn;
-      mappings[token] = entry;
-      if (!poolInfos.length) saveMappingsToDisk();
-
-      const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-      const proto = protoHeader || req.protocol || 'https';
-      const host = req.get('host');
-      const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
-      const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
-      const fileUrl = `${origin}${sharePath}`;
-
-      return res.json({ token, url: fileUrl, sharePath, info: entry });
-    } catch (dbErr) {
-      console.error('Save to all DB pools failed:', dbErr && dbErr.message);
+      // read buffer (be mindful for very large files; alternative: stream to DB in-chunks)
+      let buf;
       try {
-        saveBufferToPending(token, entry, buf);
-        entry.storage = 'pending_disk';
+        buf = fs.readFileSync(fileSavedPath);
+      } catch (e) {
+        console.error('Failed to read uploaded file', e && e.message);
+        return res.status(500).json({ error: 'Failed processing uploaded file' });
+      }
+
+      const token = genToken(10);
+      const safeOriginal = safeFileName(originalName);
+      const entry = {
+        token,
+        originalName,
+        safeOriginal,
+        size: buf.length,
+        mime: mimeType,
+        createdAt: new Date().toISOString(),
+        storage: 'db'
+      };
+
+      // probe duration (optional)
+      try {
+        const dur = probeDurationFromBuffer(buf);
+        if (dur && !isNaN(dur)) {
+          entry.duration = Math.round(dur);
+          console.log(`[UPLOAD] probed duration: ${formatTimeHMS(entry.duration)} for token ${token}`);
+        }
+      } catch (e) { console.warn('[UPLOAD] probe failed', e && e.message); }
+
+      // try save to DBs
+      try {
+        const storedOn = await saveChunksToDBAcrossPools(token, buf);
+        try { await saveMappingMetadataToDBAcrossPools(token, entry); } catch(e){ console.warn('metadata save failed', e && e.message); }
+        entry.storage = storedOn;
         mappings[token] = entry;
         if (!poolInfos.length) saveMappingsToDisk();
+        try { fs.unlinkSync(fileSavedPath); } catch(e){}
         const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
         const proto = protoHeader || req.protocol || 'https';
         const host = req.get('host');
         const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
         const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
         const fileUrl = `${origin}${sharePath}`;
-        return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
-      } catch (diskErr) {
-        console.error('Disk fallback failed:', diskErr && diskErr.message);
-        return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
+        return res.json({ token, url: fileUrl, sharePath, info: entry });
+      } catch (dbErr) {
+        console.error('Save to all DB pools failed:', dbErr && dbErr.message);
+        try {
+          saveBufferToPending(token, entry, buf);
+          entry.storage = 'pending_disk';
+          mappings[token] = entry;
+          if (!poolInfos.length) saveMappingsToDisk();
+          try { fs.unlinkSync(fileSavedPath); } catch(e){}
+          const protoHeader = (req.headers['x-forwarded-proto'] || '').split(',')[0];
+          const proto = protoHeader || req.protocol || 'https';
+          const host = req.get('host');
+          const origin = (process.env.BASE_URL && process.env.BASE_URL.replace(/\/+$/, '')) || `${proto}://${host}`;
+          const sharePath = `/TF-${token}/${encodeURIComponent(safeOriginal)}`;
+          const fileUrl = `${origin}${sharePath}`;
+          return res.json({ token, url: fileUrl, sharePath, info: entry, note: 'saved-locally-pending-db' });
+        } catch (diskErr) {
+          console.error('Disk fallback failed:', diskErr && diskErr.message);
+          return res.status(500).json({ error: 'Failed saving file', details: diskErr && diskErr.message });
+        }
       }
-    }
+    });
+
+    req.pipe(bb);
   } catch (err) {
     console.error('Upload error', err && err.message);
-    return res.status(500).json({ error: 'Upload failed', details: err && err.message });
+    try { return res.status(500).json({ error: 'Upload failed', details: err && err.message }); } catch(e){}
   }
 });
 
 // -------------------- serve TF token (Range aware for blobs, chunks, pending) --------------------
+function parseRange(rangeHeader, size) {
+  if (!rangeHeader) return null;
+  const m = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
+  if (!m) return null;
+  const start = m[1] === '' ? null : parseInt(m[1], 10);
+  const end = m[2] === '' ? null : parseInt(m[2], 10);
+  if (start === null && end === null) return null;
+  const s = start !== null ? start : (size - (end + 1));
+  const e = end !== null ? end : (size - 1);
+  if (isNaN(s) || isNaN(e) || s > e || s < 0) return null;
+  return { start: s, end: e };
+}
+
+function inferMimeFromName(name, fallback) {
+  if (!name) return fallback || 'application/octet-stream';
+  const ext = path.extname(name || '').toLowerCase();
+  const map = {
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.webm': 'video/webm',
+    '.ogg': 'video/ogg',
+    '.ogv': 'video/ogg',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.mov': 'video/quicktime'
+  };
+  return map[ext] || fallback || 'application/octet-stream';
+}
+
+function probeDurationFromBuffer(buf) {
+  const tmp = path.join(PENDING_DIR, `probe-${Date.now()}-${genToken(6)}.tmp`);
+  try {
+    fs.writeFileSync(tmp, buf);
+    const out = spawnSync('ffprobe', ['-v','quiet','-print_format','json','-show_format', tmp], { encoding:'utf8', timeout: 7000 });
+    if (out && out.status === 0 && out.stdout) {
+      const j = JSON.parse(out.stdout);
+      const dur = j && j.format && parseFloat(j.format.duration);
+      if (!isNaN(dur) && dur > 0) return dur;
+    }
+  } catch (e) {
+    // ignore
+  } finally {
+    try { fs.unlinkSync(tmp); } catch(e){}
+  }
+  return null;
+}
+
 app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
   try {
     const token = req.params.token;
@@ -665,12 +688,10 @@ app.get(['/TF-:token', '/TF-:token/:name'], async (req, res) => {
             return;
           }
           const chunk = buf.slice(start, end + 1);
-          const chunkLen = chunk.length;
           res.status(206).set({
             'Content-Range': `bytes ${start}-${end}/${fileLen}`,
-            'Content-Length': String(chunkLen)
+            'Content-Length': String(chunk.length)
           });
-          // stream the slice and log progress relative to whole file
           streamBuffersToRes([chunk], res, req, token, fileLen, durationSeconds);
           return;
         } else {
