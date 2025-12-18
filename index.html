@@ -1,9 +1,7 @@
-```html
 <!DOCTYPE html>
 <html lang="ht">
 <head>
   <meta charset="utf-8" />
-  <!-- META VIEWPORT (minimal change to disable pinch-zoom) -->
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#000000" />
   <title>Adam_D'H7</title>
@@ -34,115 +32,39 @@
       -moz-osx-font-smoothing:grayscale;
       padding-bottom:60px;
     }
-
     .header{ padding:18px 16px; text-align:center; position:sticky; top:0; backdrop-filter: blur(10px); background: rgba(0,0,0,0.7); z-index:10; }
     .logo{ font-size:26px; font-weight:700; background:linear-gradient(90deg,#fff,#000); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
     .search-container{ display:flex; justify-content:center; padding:8px 20px; }
     .search-box{ width:100%; max-width:500px; background:#1c1c1e; border:none; padding:10px 14px; border-radius:12px; color:#fff; font-size:15px; outline:none; }
-
-    /* keep original explorerView behavior (scrollable) */
     #explorerView{ padding:18px; max-height:calc(100vh - 120px); overflow-y:auto; background:#000; -webkit-overflow-scrolling:touch; }
-
     .post-card{ background:#111; border-radius:14px; padding:14px; margin-bottom:18px; box-shadow:0 2px 8px rgba(0,0,0,0.7); }
     .post-name{ font-weight:700; font-size:16px; margin:8px 0; color:#fff; text-align:left; }
     .post-text{ font-size:14px; color:#ddd; margin-bottom:10px; white-space:pre-wrap; text-align:left; }
     .post-desc{ font-size:13px; color:#ccc; margin-top:8px; text-align:left; }
-
     .media-wrap{ text-align:center; margin: 0 0 10px 0; }
-
-    .post-thumb-container {
-      position:relative;
-      display:inline-block;
-      box-sizing:border-box;
-      max-width:var(--card-max-width);
-      width:auto;
-      background:#000;
-      border-radius:12px;
-      overflow:hidden;
-      padding:0;
-      box-shadow: inset 0 0 18px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.6);
-      min-height:var(--card-min-height);
-      max-height:var(--card-max-height);
-    }
-
+    .post-thumb-container { position:relative; display:inline-block; box-sizing:border-box; max-width:var(--card-max-width); width:auto; background:#000; border-radius:12px; overflow:hidden; padding:0; box-shadow: inset 0 0 18px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.6); min-height:var(--card-min-height); max-height:var(--card-max-height); }
     .post-thumb, .post-thumb img, .post-thumb video, .post-thumb iframe { display:block; width:auto; max-width:100%; height:auto; max-height:calc(var(--card-max-height)); object-fit:contain; background:#000; border-radius:0; }
     .post-thumb iframe, .post-thumb video { display:block; width:100%; height:auto; }
-
     .social-section{ margin-top:10px; padding-top:10px; border-top:1px solid #333; display:flex; justify-content:center; gap:18px; flex-wrap:wrap; }
     .social-section a{ color:#fff; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:10px; background:rgba(255,255,255,0.03); }
     .social-section i{ font-size:18px; }
-
     .ad-overlay{ position:fixed; inset:0; background:rgba(0,0,0,0.9); display:none; justify-content:center; align-items:center; z-index:10000; }
     .ad-container{ position:relative; max-width:90%; width:100%; height:80%; background:#111; padding:0; border-radius:10px; overflow:hidden; }
     .ad-container iframe{ width:100%; height:100%; border:none; background:#000; }
     .skip-btn{ position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.5); border:none; color:#fff; padding:8px 12px; border-radius:6px; cursor:pointer; display:none; z-index:1001; }
-
-    @media (max-width:600px) {
-      :root { --mini-w:86px; --mini-h:62px; }
-    }
-
-    .ad-overlay {
-      background: #000 !important;
-      pointer-events: auto;
-    }
-
-    /* update banner */
-    #sw-update-banner{
-      position:fixed;
-      left:12px;
-      right:12px;
-      bottom:12px;
-      background:#111;
-      color:#fff;
-      padding:10px 14px;
-      border-radius:8px;
-      box-shadow:0 6px 18px rgba(0,0,0,.4);
-      font-family:sans-serif;
-      text-align:center;
-      z-index:99999;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      gap:12px;
-    }
-    #sw-update-banner button{
-      background:#1a73e8;
-      color:#fff;
-      border:0;
-      padding:8px 12px;
-      border-radius:6px;
-      cursor:pointer;
-    }
-
-    /* ---------- HIDE SCROLLBARS VISUALLY BUT KEEP SCROLLING ---------- */
-    /* only target explorerView so UI layout unchanged */
-    #explorerView {
-      -ms-overflow-style: none; /* IE/Edge */
-      scrollbar-width: none;    /* Firefox */
-      touch-action: pan-y;      /* allow vertical pan (important for mobile scroll) */
-    }
-    #explorerView::-webkit-scrollbar {
-      display: none; /* WebKit */
-      width: 0;
-      height: 0;
-    }
-
-    /* --- CUSTOM PLAYER STYLES (copied exactly from code1) --- */
-    :root{
-      --bg-player:#000;
-      --muted:#9aa0a6;
-      --accent:#fff;
-      --seek-height:8px;
-      --box-bg: rgba(255,255,255,0.02);
-      --box-border: rgba(255,255,255,0.03);
-    }
+    @media (max-width:600px) { :root { --mini-w:86px; --mini-h:62px; } }
+    .ad-overlay { background: #000 !important; pointer-events: auto; }
+    #sw-update-banner{ position:fixed; left:12px; right:12px; bottom:12px; background:#111; color:#fff; padding:10px 14px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.4); font-family:sans-serif; text-align:center; z-index:99999; display:flex; align-items:center; justify-content:center; gap:12px; }
+    #sw-update-banner button{ background:#1a73e8; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; }
+    #explorerView { -ms-overflow-style: none; scrollbar-width: none; touch-action: pan-y; }
+    #explorerView::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    :root{ --bg-player:#000; --muted:#9aa0a6; --accent:#fff; --seek-height:8px; --box-bg: rgba(255,255,255,0.02); --box-border: rgba(255,255,255,0.03); }
     .wrap-player, .video-card, .controls-wrap, .inside-mini-controls, .menu-overlay, .lang-overlay { user-select:none; -webkit-user-select:none; -ms-user-select:none; -moz-user-select:none; }
     .wrap-player{max-width:1100px;margin:28px auto;padding:12px;width:95%}
     .video-card{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:16/9;max-height:68vh;min-height:180px;touch-action:none}
     .video-card.hidden-instance{display:none}
     .video-card .player-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1;background:#000;transition:filter .08s linear}
     .video-card .player-video.contain{ object-fit:contain; background:#000; }
-
     .controls-wrap{position:absolute;left:12px;right:12px;bottom:12px;pointer-events:none;z-index:12;transition:opacity .18s ease}
     .time-row{display:flex;align-items:center;gap:12px;padding:8px 12px;color:var(--muted);font-size:14px;justify-content:center}
     .time{width:82px;text-align:center;font-variant-numeric:tabular-nums}
@@ -150,90 +72,28 @@
     .seek{position:relative;height:var(--seek-height);width:100%;border-radius:999px;cursor:pointer;background:repeating-linear-gradient(90deg, rgba(255,255,255,0.06) 0 2px, rgba(255,255,255,0) 2px 12px);}
     .fill{position:absolute;left:0;top:0;height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg, rgba(255,255,255,0.95), rgba(255,255,255,0.55));}
     .thumb{position:absolute;top:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;background:#0b0b0b;border:2px solid var(--accent);box-shadow:none;pointer-events:auto;touch-action:none}
-
     .controls-hidden{opacity:0;pointer-events:none}
     .controls-visible{opacity:1;pointer-events:auto}
-
-    .inside-mini-controls{
-    position:absolute;
-    left:12px;
-    right:12px;
-    bottom:92px;
-    z-index:13;
-    display:flex;
-    justify-content:center;
-    gap:14px;
-    pointer-events:auto;
-    transition:bottom .18s ease, opacity .18s ease;
-    }
+    .inside-mini-controls{ position:absolute; left:12px; right:12px; bottom:92px; z-index:13; display:flex; justify-content:center; gap:14px; pointer-events:auto; transition:bottom .18s ease, opacity .18s ease; }
     .inside-hidden{opacity:0;pointer-events:none}
     .inside-visible{opacity:1;pointer-events:auto}
     .video-card.landscape-mode .inside-mini-controls{ bottom:160px; }
-
-    .inside-item{
-    min-width:86px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:8px;
-    border-radius:10px;
-    background:var(--box-bg);
-    border:1px solid var(--box-border);
-    }
-    .inside-item .mini-btn{
-    width:100%;
-    height:44px;
-    border-radius:8px;
-    border:none;
-    background:transparent;
-    color:var(--accent);
-    font-weight:700;
-    font-size:15px;
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    cursor:pointer;
-    -webkit-tap-highlight-color: transparent;
-    }
+    .inside-item{ min-width:86px; display:flex; align-items:center; justify-content:center; padding:8px; border-radius:10px; background:var(--box-bg); border:1px solid var(--box-border); }
+    .inside-item .mini-btn{ width:100%; height:44px; border-radius:8px; border:none; background:transparent; color:var(--accent); font-weight:700; font-size:15px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; -webkit-tap-highlight-color: transparent; }
     .inside-item .mini-btn:active{transform:translateY(1px)}
     @media (orientation:landscape) { .inside-item{min-width:110px;padding:10px} }
-
     .landscape-btn{margin-left:8px;border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
     .landscape-btn:hover{color:var(--accent)}
-
     .menu-dots{margin-left:6px;border:none;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;display:none;padding:6px;border-radius:8px}
     .video-card.landscape-mode .menu-dots{ display:inline-block; }
     @media (orientation:landscape) { .menu-dots { display:inline-block; } }
     .menu-dots:hover{color:var(--accent);background:rgba(255,255,255,0.02)}
-
-    .swipe-indicator{
-    position:absolute;
-    left:50%;
-    top:50%;
-    transform:translate(-50%,-50%);
-    min-width:140px;
-    padding:10px 14px;
-    border-radius:10px;
-    background:rgba(0,0,0,0.75);
-    color:var(--accent);
-    display:flex;
-    align-items:center;
-    gap:10px;
-    justify-content:center;
-    z-index:20;
-    pointer-events:none;
-    opacity:0;
-    transition:opacity .12s ease;
-    font-weight:700;
-    font-size:15px;
-    }
+    .swipe-indicator{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); min-width:140px; padding:10px 14px; border-radius:10px; background:rgba(0,0,0,0.75); color:var(--accent); display:flex; align-items:center; gap:10px; justify-content:center; z-index:20; pointer-events:none; opacity:0; transition:opacity .12s ease; font-weight:700; font-size:15px; }
     .swipe-indicator.show{opacity:1}
     .swipe-icon{width:22px;height:22px;flex:0 0 22px}
     .swipe-value{min-width:48px;text-align:right;font-variant-numeric:tabular-nums}
-
     .error{position:absolute;left:12px;right:12px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.6);padding:16px;border-radius:10px;color:#ff9b9b;display:none;text-align:center;z-index:20}
     .error a{color:#fff;text-decoration:underline}
-
     .menu-overlay, .lang-overlay {position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:99999;pointer-events:auto;opacity:0;visibility:hidden;transition:opacity .14s ease, visibility .14s;}
     .menu-overlay.show, .lang-overlay.show { opacity:1; visibility:visible; }
     .menu-backdrop, .lang-backdrop { position:absolute; inset:0; z-index:99990; background:rgba(0,0,0,0.5); }
@@ -263,7 +123,6 @@
 
   <div id="explorerView" role="main" aria-live="polite"></div>
 
-  <!-- Pré-roll overlay -->
   <div id="adOverlay" class="ad-overlay" aria-hidden="true" role="dialog" aria-label="Publicité">
     <div class="ad-container" role="document" aria-label="Contenu publicité">
       <iframe id="prerollFrame" src="about:blank" allow="autoplay; fullscreen" title="Pré-roll Ad"></iframe>
@@ -271,7 +130,6 @@
     </div>
   </div>
 
-  <!-- CUSTOM PLAYER (exact from code1) - kept as a single reusable instance -->
   <div style="display:none" id="playerTemplate">
     <div class="wrap-player">
       <div class="video-card hidden-instance" id="card">
@@ -358,9 +216,6 @@
   </div>
 
   <script>
-    /*******************************
-     * CONFIG
-     *******************************/
     const AD_REDIRECT_URL = "https://www.effectivegatecpm.com/sb8frb30?key=b74cd3abdfc6db3be0c0b8d215fcb582";
     const AD_PROXY_PREFIX = null;
     const SKIP_DELAY_MS = 7000;
@@ -405,7 +260,6 @@
     let skipTimeout = null;
     let adCallback = null;
 
-    // popup-first ad flow: try to open real browser tab/window (user sees Chrome UI)
     function tryOpenAdInBrowser(url) {
       try {
         const features = 'noopener,noreferrer,toolbar=yes,location=yes,menubar=no,status=yes,scrollbars=yes,resizable=yes,width=960,height=720';
@@ -421,7 +275,6 @@
       }
     }
 
-    // best-effort impression ping
     function sendImpressionPing(url) {
       try {
         const img = new Image();
@@ -492,7 +345,6 @@
       const FAIL_MS = 900;
       setTimeout(() => {
         if (loaded) return;
-        logAdEvent('overlay_iframe_no_onload_fast', { url });
         const container = overlay.querySelector('.ad-container');
         if (container) {
           if (!document.getElementById('ad-block-note')) {
@@ -550,9 +402,6 @@
       }
     });
 
-    /*******************************
-     * Posts loading & click wiring
-     *******************************/
     let allData = [];
 
     function shuffle(array) {
@@ -571,7 +420,6 @@
         shuffle(allData);
         displayExplorer(allData);
       }).catch(err => {
-        console.error("Erreur chargement JSON:", err);
         const ex = document.getElementById("explorerView");
         ex.innerHTML = '<div style="color:#999;padding:20px;text-align:center">Pa kapab chaje kontni (index.json).</div>';
       });
@@ -684,7 +532,6 @@
       } catch(e){}
     }
 
-    // playMedia updated to use the custom player for mp4/webm/mov etc.
     function playMedia(src, container){
       if (!src) return;
       container.innerHTML = "";
@@ -708,16 +555,12 @@
           container.appendChild(iframe);
           setTimeout(() => adjustIFrameSize(iframe, container), 60);
         } else {
-          // For direct video files: use the exact custom player instance (from code1)
-          // If the player instance is not yet initialized, clone the template and initialize it.
           if (!window.__player || !window.__player._initialized) {
             initCustomPlayerFromTemplate();
           }
-          // Use playCustom to attach the player into the clicked container and play the src
           if (window.__player && typeof window.__player.playCustom === 'function') {
             window.__player.playCustom(src, container);
           } else {
-            // fallback: create native video element (should rarely happen)
             const videoEl = document.createElement("video");
             videoEl.src = src;
             videoEl.controls = true;
@@ -780,27 +623,20 @@
       try { return JSON.parse(localStorage.getItem('adLogs') || '[]'); } catch(e) { return []; }
     };
 
-    /*******************************
-     * Custom player initialization
-     *******************************/
     function initCustomPlayerFromTemplate(){
       if (window.__player && window.__player._initialized) return;
 
-      // Clone template nodes into DOM (but keep hidden until used)
       const tpl = document.getElementById('playerTemplate');
       const clone = tpl.cloneNode(true);
       clone.id = 'playerInstanceRoot';
       clone.style.display = 'block';
-      // extract the player node and overlays
       const card = clone.querySelector('.video-card');
       const menuOverlay = clone.querySelector('.menu-overlay');
       const langOverlay = clone.querySelector('.lang-overlay');
 
-      // append templates to body but hidden
       document.body.appendChild(clone);
       card.classList.add('hidden-instance');
 
-      // grab elements inside cloned instance (use querySelector from clone)
       const video = clone.querySelector('#video');
       const insidePlay = clone.querySelector('#insidePlay');
       const insideForward = clone.querySelector('#insideForward');
@@ -858,7 +694,6 @@
       insideForward.addEventListener('click', (e)=>{ e.stopPropagation(); video.currentTime = Math.min(video.duration || 0, video.currentTime + 10); });
       insideBack.addEventListener('click', (e)=>{ e.stopPropagation(); video.currentTime = Math.max(0, video.currentTime - 10); });
 
-      // SCRUB immediate seeking (kept)
       let scrubbing = false;
       let wasPlayingBeforeScrub = false;
       function timeFromClientX(clientX){
@@ -1169,7 +1004,6 @@
       tryAutoplay();
       showAll();
 
-      // Expose a simple API to play a src inside a given container
       window.__player = window.__player || {};
       window.__player._initialized = true;
       window.__player.video = video;
@@ -1181,17 +1015,12 @@
 
       window.__player.playCustom = async function(src, attachTo){
         if(!src) return;
-        // move the card instance into attachTo and show it
         try {
-          // ensure overlays live in document body (they will be moved into card in landscape)
           if(menuOverlay.parentNode !== document.body) document.body.appendChild(menuOverlay);
           if(langOverlay.parentNode !== document.body) document.body.appendChild(langOverlay);
-
-          // place card inside attachTo (replace its content while keeping structure)
           attachTo.innerHTML = '';
           attachTo.appendChild(card);
           card.classList.remove('hidden-instance');
-          // set source
           const s = video.querySelector('source');
           if(s) s.src = src;
           try { video.src = src; } catch(e){}
@@ -1201,7 +1030,6 @@
         } catch(e){}
       };
 
-      // store references for later moves
       window.__player._internal = {
         rootClone: clone,
         card,
@@ -1210,12 +1038,8 @@
       };
     }
 
-    // Initialize minimal player template early so it's ready when adCallback triggers
     initCustomPlayerFromTemplate();
 
-    /*******************************
-     * SERVICE WORKER REG + UX
-     *******************************/
     window._swReg = null;
     function showUpdateBanner() {
       if (document.getElementById('sw-update-banner')) return;
@@ -1275,9 +1099,6 @@
       });
     }
 
-    /*******************************
-     * TOUCH / ZOOM PREVENTION
-     *******************************/
     document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
     document.addEventListener('touchmove', function (e) {
       if (e.scale && e.scale !== 1) { e.preventDefault(); }
@@ -1318,7 +1139,6 @@
       });
     })();
 
-    // copy handler: only copy .post-name text
     document.addEventListener('copy', function(e) {
       try {
         const sel = window.getSelection();
@@ -1343,4 +1163,3 @@
   <script type='text/javascript' src='//pl28135197.effectivegatecpm.com/3b/5a/09/3b5a097d28211945158c20a3f4879260.js'></script>
 </body>
 </html>
-```
