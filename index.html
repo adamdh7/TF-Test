@@ -6,7 +6,6 @@
   <meta name="theme-color" content="#000000" />
   <title>Adam_D'H7</title>
   <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#000000" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -21,6 +20,12 @@
       --card-max-height:80vh;
       --mini-w:100px;
       --mini-h:70px;
+      --bg:#000;
+      --muted:#9aa0a6;
+      --accent:#fff;
+      --seek-height:8px;
+      --box-bg: rgba(255,255,255,0.02);
+      --box-border: rgba(255,255,255,0.03);
     }
     html,body{height:100%;}
     body{
@@ -38,7 +43,7 @@
     .search-box{ width:100%; max-width:500px; background:#1c1c1e; border:none; padding:10px 14px; border-radius:12px; color:#fff; font-size:15px; outline:none; }
     #explorerView{ padding:18px; max-height:calc(100vh - 120px); overflow-y:auto; background:#000; -webkit-overflow-scrolling:touch; }
     .post-card{ background:#111; border-radius:14px; padding:14px; margin-bottom:18px; box-shadow:0 2px 8px rgba(0,0,0,0.7); }
-    .post-name{ font-weight:700; font-size:16px; margin:8px 0; color:#fff; text-align:left; }
+    .post-name{ font-weight:700; font-size:16px; margin:8px 0; color:#fff; text-align:left; user-select:text; -webkit-user-select:text; }
     .post-text{ font-size:14px; color:#ddd; margin-bottom:10px; white-space:pre-wrap; text-align:left; }
     .post-desc{ font-size:13px; color:#ccc; margin-top:8px; text-align:left; }
     .media-wrap{ text-align:center; margin: 0 0 10px 0; }
@@ -53,12 +58,11 @@
     .ad-container iframe{ width:100%; height:100%; border:none; background:#000; }
     .skip-btn{ position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.5); border:none; color:#fff; padding:8px 12px; border-radius:6px; cursor:pointer; display:none; z-index:1001; }
     @media (max-width:600px) { :root { --mini-w:86px; --mini-h:62px; } }
-    .ad-overlay { background: #000 !important; pointer-events: auto; }
     #sw-update-banner{ position:fixed; left:12px; right:12px; bottom:12px; background:#111; color:#fff; padding:10px 14px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.4); font-family:sans-serif; text-align:center; z-index:99999; display:flex; align-items:center; justify-content:center; gap:12px; }
     #sw-update-banner button{ background:#1a73e8; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; }
     #explorerView { -ms-overflow-style: none; scrollbar-width: none; touch-action: pan-y; }
     #explorerView::-webkit-scrollbar { display: none; width: 0; height: 0; }
-    :root{ --bg-player:#000; --muted:#9aa0a6; --accent:#fff; --seek-height:8px; --box-bg: rgba(255,255,255,0.02); --box-border: rgba(255,255,255,0.03); }
+
     .wrap-player, .video-card, .controls-wrap, .inside-mini-controls, .menu-overlay, .lang-overlay { user-select:none; -webkit-user-select:none; -ms-user-select:none; -moz-user-select:none; }
     .wrap-player{max-width:1100px;margin:28px auto;padding:12px;width:95%}
     .video-card{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:16/9;max-height:68vh;min-height:180px;touch-action:none}
@@ -111,6 +115,8 @@
     .lang-item{padding:12px;border-radius:10px;background:rgba(255,255,255,0.01);cursor:pointer;border:1px solid rgba(255,255,255,0.02);display:flex;align-items:center;justify-content:space-between}
     .lang-item:hover{background:rgba(255,255,255,0.03)}
     .bold{font-weight:800}
+    body, body * { -webkit-user-select: none !important; -moz-user-select: none !important; -ms-user-select: none !important; user-select: none !important; }
+    input, textarea { -webkit-user-select: text !important; -moz-user-select: text !important; -ms-user-select: text !important; user-select: text !important; }
   </style>
 </head>
 <body>
@@ -226,7 +232,7 @@
         logs.push({ action, extra, t: new Date().toISOString() });
         while (logs.length > 1000) logs.shift();
         localStorage.setItem('adLogs', JSON.stringify(logs));
-      } catch (e) { console.warn('logAdEvent error', e); }
+      } catch (e) {}
     }
 
     function openInNewTab(url) {
@@ -1095,7 +1101,7 @@
               });
             };
           })
-          .catch(err => console.warn('SW register failed:', err));
+          .catch(err => {});
       });
     }
 
