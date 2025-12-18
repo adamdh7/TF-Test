@@ -66,9 +66,8 @@
     .wrap-player, .video-card, .controls-wrap, .inside-mini-controls, .menu-overlay, .lang-overlay { user-select:none; -webkit-user-select:none; -ms-user-select:none; -moz-user-select:none; }
     .wrap-player{max-width:1100px;margin:28px auto;padding:12px;width:95%}
     .video-card{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:16/9;max-height:68vh;min-height:180px;touch-action:none}
-    .video-card.hidden-instance{display:none}
-    .video-card .player-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1;background:#000;transition:filter .08s linear}
-    .video-card .player-video.contain{ object-fit:contain; background:#000; }
+    .player-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:1;background:#000;transition:filter .08s linear}
+    .player-video.contain{ object-fit:contain; background:#000; }
     .controls-wrap{position:absolute;left:12px;right:12px;bottom:12px;pointer-events:none;z-index:12;transition:opacity .18s ease}
     .time-row{display:flex;align-items:center;gap:12px;padding:8px 12px;color:var(--muted);font-size:14px;justify-content:center}
     .time{width:82px;text-align:center;font-variant-numeric:tabular-nums}
@@ -136,80 +135,80 @@
     </div>
   </div>
 
-  <div style="display:none" id="playerTemplate">
+  <div id="playerRoot" style="display:none">
     <div class="wrap-player">
-      <div class="video-card hidden-instance" id="card">
-        <video id="video" class="player-video" preload="auto" playsinline crossorigin="anonymous">
+      <div class="video-card" id="cardPlayer">
+        <video id="videoPlayer" class="player-video" preload="auto" playsinline crossorigin="anonymous">
           <source src="" type="video/mp4">
           Votre navigateur ne supporte pas la vidéo HTML5.
         </video>
 
-        <div class="inside-mini-controls inside-visible" id="insideMini">
-          <div class="inside-item"><button class="mini-btn" id="insideBack">-10</button></div>
-          <div class="inside-item"><button class="mini-btn" id="insidePlay">❚❚</button></div>
-          <div class="inside-item"><button class="mini-btn" id="insideForward">+10</button></div>
+        <div class="inside-mini-controls inside-visible" id="insideMiniPlayer">
+          <div class="inside-item"><button class="mini-btn" id="insideBackPlayer">-10</button></div>
+          <div class="inside-item"><button class="mini-btn" id="insidePlayPlayer">❚❚</button></div>
+          <div class="inside-item"><button class="mini-btn" id="insideForwardPlayer">+10</button></div>
         </div>
 
-        <div class="controls-wrap controls-visible" id="controlsWrap">
-          <div class="time-row" id="timeRow">
-            <div class="time" id="current">0:00</div>
+        <div class="controls-wrap controls-visible" id="controlsWrapPlayer">
+          <div class="time-row" id="timeRowPlayer">
+            <div class="time" id="currentPlayer">0:00</div>
             <div class="progress">
-              <div class="seek" id="seekBar" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                <div class="fill" id="fill"></div>
-                <div class="thumb" id="thumb" aria-hidden="true"></div>
+              <div class="seek" id="seekBarPlayer" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="fill" id="fillPlayer"></div>
+                <div class="thumb" id="thumbPlayer" aria-hidden="true"></div>
               </div>
             </div>
-            <div class="time" id="duration">0:00</div>
-            <button class="landscape-btn" id="landscapeBtn" title="Basculer paysage">⛶</button>
-            <button class="menu-dots" id="menuBtn" title="Menu">⋯</button>
+            <div class="time" id="durationPlayer">0:00</div>
+            <button class="landscape-btn" id="landscapeBtnPlayer" title="Basculer paysage">⛶</button>
+            <button class="menu-dots" id="menuBtnPlayer" title="Menu">⋯</button>
           </div>
         </div>
 
-        <div class="swipe-indicator" id="swipeIndicator" aria-hidden="true">
-          <div class="swipe-icon" id="swipeIcon"></div>
-          <div class="swipe-value" id="swipeValue">0%</div>
+        <div class="swipe-indicator" id="swipeIndicatorPlayer" aria-hidden="true">
+          <div class="swipe-icon" id="swipeIconPlayer"></div>
+          <div class="swipe-value" id="swipeValuePlayer">0%</div>
         </div>
 
-        <div class="error" id="errorBox">Impossible de lire la vidéo. <span id="errTxt"></span></div>
+        <div class="error" id="errorBoxPlayer">Impossible de lire la vidéo. <span id="errTxtPlayer"></span></div>
       </div>
     </div>
 
-    <div class="menu-overlay" id="menuOverlay" aria-hidden="true" role="dialog" aria-modal="true">
-      <div class="menu-backdrop" id="menuBackdrop"></div>
+    <div class="menu-overlay" id="menuOverlayPlayer" aria-hidden="true" role="dialog" aria-modal="true">
+      <div class="menu-backdrop" id="menuBackdropPlayer"></div>
       <div class="menu-sheet" role="document" aria-label="Menu player">
         <div class="menu-header">
-          <button class="back-btn" id="menuBackBtn" title="Retour" aria-label="Retour" style="display:none">
+          <button class="back-btn" id="menuBackBtnPlayer" title="Retour" aria-label="Retour" style="display:none">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--muted)"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Retour
           </button>
           <strong style="font-weight:700">Options</strong>
-          <button class="close-btn" id="menuCloseBtn" title="Fermer" aria-label="Fermer">
+          <button class="close-btn" id="menuCloseBtnPlayer" title="Fermer" aria-label="Fermer">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--muted)"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
-        <div class="menu-list" id="menuList">
-          <div class="menu-item" id="menuLang" role="button" tabindex="0">
+        <div class="menu-list" id="menuListPlayer">
+          <div class="menu-item" id="menuLangPlayer" role="button" tabindex="0">
             <span>Langue</span>
             <span aria-hidden="true">›</span>
           </div>
-          <div class="menu-item" id="menuPip" role="button" tabindex="0">
+          <div class="menu-item" id="menuPipPlayer" role="button" tabindex="0">
             <span>Mode PIP</span>
-            <span id="pipStatus" style="opacity:.8;font-size:13px">Activer</span>
+            <span id="pipStatusPlayer" style="opacity:.8;font-size:13px">Activer</span>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="lang-overlay" id="langOverlay" aria-hidden="true" role="dialog" aria-modal="true">
-      <div class="lang-backdrop" id="langBackdrop"></div>
+    <div class="lang-overlay" id="langOverlayPlayer" aria-hidden="true" role="dialog" aria-modal="true">
+      <div class="lang-backdrop" id="langBackdropPlayer"></div>
       <div class="lang-sheet" role="document" aria-label="Langue settings">
         <div class="menu-header">
-          <button class="back-btn" id="langBackBtn" title="Retour" aria-label="Retour">
+          <button class="back-btn" id="langBackBtnPlayer" title="Retour" aria-label="Retour">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--muted)"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Retour
           </button>
           <strong style="font-weight:700">Langue</strong>
-          <button class="close-btn" id="langCloseBtn" title="Fermer" aria-label="Fermer">
+          <button class="close-btn" id="langCloseBtnPlayer" title="Fermer" aria-label="Fermer">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="color:var(--muted)"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
@@ -410,6 +409,16 @@
 
     let allData = [];
 
+    const sampleFallback = [
+      {
+        "Catégorie": "poste",
+        "Name": "Sample Video - Solo Leveling (demo)",
+        "Texte": "Sample post pour tester.",
+        "Previously": "https://pub-6801bec6f6414c08995c6708f70f99c2.r2.dev/1765156879946-Solo_Leveling_2_-_EP_13_VF.mp4",
+        "Url Thumb": "https://via.placeholder.com/800x450?text=Solo+Leveling"
+      }
+    ];
+
     function shuffle(array) {
       for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -418,17 +427,31 @@
       return array;
     }
 
-    fetch("index.json")
-      .then(r => r.json())
-      .then(files => Promise.all(files.map(f => fetch(f).then(r => r.json()))))
-      .then(jsons => {
-        jsons.forEach(d => Array.isArray(d) ? allData.push(...d) : allData.push(d));
-        shuffle(allData);
-        displayExplorer(allData);
-      }).catch(err => {
-        const ex = document.getElementById("explorerView");
-        ex.innerHTML = '<div style="color:#999;padding:20px;text-align:center">Pa kapab chaje kontni (index.json).</div>';
+    function tryLoadIndexJson() {
+      return fetch("index.json").then(r => {
+        if (!r.ok) throw new Error('no index.json');
+        return r.json();
+      }).catch(()=> {
+        return null;
       });
+    }
+
+    (async function initDataAndDisplay(){
+      const indexFiles = await tryLoadIndexJson();
+      if (indexFiles && Array.isArray(indexFiles) && indexFiles.length) {
+        try {
+          const jsons = await Promise.all(indexFiles.map(f => fetch(f).then(r => r.ok ? r.json() : null).catch(()=>null)));
+          const merged = [];
+          jsons.forEach(d => { if (Array.isArray(d)) merged.push(...d); else if (d) merged.push(d); });
+          allData = shuffle(merged.length ? merged : sampleFallback.slice());
+        } catch(e){
+          allData = sampleFallback.slice();
+        }
+      } else {
+        allData = sampleFallback.slice();
+      }
+      displayExplorer(allData);
+    })();
 
     function filterSearch(val){
       const txt = (val || "").toLowerCase();
@@ -487,7 +510,7 @@
         thumbCon.addEventListener("click", (ev) => {
           ev.stopPropagation();
           const src = post.Previously || post.video || post["Url Video"] || post["Url"] || post.image || post.media || "";
-          adCallback = () => playMedia(src, thumbCon);
+          adCallback = () => playMediaWithCustomPlayer(src, thumbCon);
           showAdPreferBrowserThenOverlay(AD_REDIRECT_URL);
         });
 
@@ -538,68 +561,6 @@
       } catch(e){}
     }
 
-    function playMedia(src, container){
-      if (!src) return;
-      container.innerHTML = "";
-
-      const isVideo = looksLikeVideo(src);
-      if (isVideo){
-        if (src.includes("youtube.com") || src.includes("youtu.be")) {
-          const iframe = document.createElement("iframe");
-          iframe.src = normalizeYouTubeEmbed(src);
-          iframe.allow = "autoplay; fullscreen; picture-in-picture";
-          iframe.style.border = "none";
-          iframe.style.display = "block";
-          container.appendChild(iframe);
-          setTimeout(() => adjustIFrameSize(iframe, container), 60);
-        } else if (src.includes("vimeo.com")) {
-          const iframe = document.createElement("iframe");
-          iframe.src = normalizeVimeoEmbed(src);
-          iframe.allow = "autoplay; fullscreen; picture-in-picture";
-          iframe.style.border = "none";
-          iframe.style.display = "block";
-          container.appendChild(iframe);
-          setTimeout(() => adjustIFrameSize(iframe, container), 60);
-        } else {
-          if (!window.__player || !window.__player._initialized) {
-            initCustomPlayerFromTemplate();
-          }
-          if (window.__player && typeof window.__player.playCustom === 'function') {
-            window.__player.playCustom(src, container);
-          } else {
-            const videoEl = document.createElement("video");
-            videoEl.src = src;
-            videoEl.controls = true;
-            videoEl.autoplay = true;
-            videoEl.playsInline = true;
-            videoEl.setAttribute("controlsList", "nodownload");
-            videoEl.style.display = "block";
-            videoEl.style.maxWidth = "100%";
-            videoEl.style.height = "auto";
-            videoEl.style.objectFit = "contain";
-            container.appendChild(videoEl);
-            videoEl.addEventListener('click', () => {
-              if (videoEl.paused) videoEl.play(); else videoEl.pause();
-            });
-          }
-        }
-      } else {
-        const imgEl = document.createElement("img");
-        imgEl.src = src;
-        imgEl.loading = "lazy";
-        imgEl.alt = "";
-        imgEl.style.display = "block";
-        imgEl.style.width = "auto";
-        imgEl.style.maxWidth = "100%";
-        imgEl.style.height = "auto";
-        imgEl.style.objectFit = "contain";
-        container.appendChild(imgEl);
-        imgEl.addEventListener('error', () => {
-          container.innerHTML = '<div style="color:#999;padding:12px;text-align:center">Imaj pa disponib</div>';
-        });
-      }
-    }
-
     function displaySocialLinks(){
       const c = document.getElementById("explorerView"),
             s = document.createElement("div");
@@ -625,56 +586,44 @@
       if (!exists) c.appendChild(s);
     }
 
-    window.getAdLogs = function() {
-      try { return JSON.parse(localStorage.getItem('adLogs') || '[]'); } catch(e) { return []; }
-    };
+    // Custom player wiring (uses the hidden player root)
+    function ensurePlayerInitialized(){
+      if (window.__customPlayerInitialized) return;
+      window.__customPlayerInitialized = true;
 
-    function initCustomPlayerFromTemplate(){
-      if (window.__player && window.__player._initialized) return;
-
-      const tpl = document.getElementById('playerTemplate');
-      const clone = tpl.cloneNode(true);
-      clone.id = 'playerInstanceRoot';
-      clone.style.display = 'block';
-      const card = clone.querySelector('.video-card');
-      const menuOverlay = clone.querySelector('.menu-overlay');
-      const langOverlay = clone.querySelector('.lang-overlay');
-
-      document.body.appendChild(clone);
-      card.classList.add('hidden-instance');
-
-      const video = clone.querySelector('#video');
-      const insidePlay = clone.querySelector('#insidePlay');
-      const insideForward = clone.querySelector('#insideForward');
-      const insideBack = clone.querySelector('#insideBack');
-      const seekBar = clone.querySelector('#seekBar');
-      const fill = clone.querySelector('#fill');
-      const thumb = clone.querySelector('#thumb');
-      const currentEl = clone.querySelector('#current');
-      const durationEl = clone.querySelector('#duration');
-      const landscapeBtn = clone.querySelector('#landscapeBtn');
-      const menuBtn = clone.querySelector('#menuBtn');
-      const controlsWrap = clone.querySelector('#controlsWrap');
-      const insideMini = clone.querySelector('#insideMini');
-      const swipeIndicator = clone.querySelector('#swipeIndicator');
-      const swipeIcon = clone.querySelector('#swipeIcon');
-      const swipeValue = clone.querySelector('#swipeValue');
-      const menuCloseBtn = clone.querySelector('#menuCloseBtn');
-      const menuBackBtn = clone.querySelector('#menuBackBtn');
-      const menuLang = clone.querySelector('#menuLang');
-      const menuPip = clone.querySelector('#menuPip');
-      const pipStatus = clone.querySelector('#pipStatus');
-      const langCloseBtn = clone.querySelector('#langCloseBtn');
-      const langBackBtn = clone.querySelector('#langBackBtn');
-      const menuBackdrop = clone.querySelector('#menuBackdrop');
-      const langBackdrop = clone.querySelector('#langBackdrop');
-      const errorBox = clone.querySelector('#errorBox');
-      const errTxt = clone.querySelector('#errTxt');
+      const root = document.getElementById('playerRoot');
+      const card = document.getElementById('cardPlayer');
+      const video = document.getElementById('videoPlayer');
+      const insidePlay = document.getElementById('insidePlayPlayer');
+      const insideForward = document.getElementById('insideForwardPlayer');
+      const insideBack = document.getElementById('insideBackPlayer');
+      const seekBar = document.getElementById('seekBarPlayer');
+      const fill = document.getElementById('fillPlayer');
+      const thumb = document.getElementById('thumbPlayer');
+      const currentEl = document.getElementById('currentPlayer');
+      const durationEl = document.getElementById('durationPlayer');
+      const landscapeBtn = document.getElementById('landscapeBtnPlayer');
+      const menuBtn = document.getElementById('menuBtnPlayer');
+      const controlsWrap = document.getElementById('controlsWrapPlayer');
+      const insideMini = document.getElementById('insideMiniPlayer');
+      const swipeIndicator = document.getElementById('swipeIndicatorPlayer');
+      const swipeIcon = document.getElementById('swipeIconPlayer');
+      const swipeValue = document.getElementById('swipeValuePlayer');
+      const menuOverlay = document.getElementById('menuOverlayPlayer');
+      const menuBackdrop = document.getElementById('menuBackdropPlayer');
+      const menuCloseBtn = document.getElementById('menuCloseBtnPlayer');
+      const menuLang = document.getElementById('menuLangPlayer');
+      const menuPip = document.getElementById('menuPipPlayer');
+      const pipStatus = document.getElementById('pipStatusPlayer');
+      const langOverlay = document.getElementById('langOverlayPlayer');
+      const langBackdrop = document.getElementById('langBackdropPlayer');
+      const langCloseBtn = document.getElementById('langCloseBtnPlayer');
+      const langBackBtn = document.getElementById('langBackBtnPlayer');
+      const errorBox = document.getElementById('errorBoxPlayer');
+      const errTxt = document.getElementById('errTxtPlayer');
 
       const svgBrightness = '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="22" height="22"><path d="M12 4V2M12 22v-2M4.93 4.93L3.51 3.51M20.49 20.49l-1.42-1.42M4 12H2M22 12h-2M4.93 19.07l-1.42 1.42M20.49 3.51l-1.42 1.42M12 8a4 4 0 100 8 4 4 0 000-8z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
       const svgVolume = '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="22" height="22"><path d="M11 5L6 9H2v6h4l5 4V5z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 9a5 5 0 010 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-      const cornerRatio = 0.20;
 
       function formatTime(sec){
         sec = Math.floor(sec) || 0;
@@ -837,8 +786,8 @@
         if(!card.classList.contains('landscape-mode')) return;
         const rect = card.getBoundingClientRect();
         const relX = clientX - rect.left;
-        const leftLimit = rect.width * cornerRatio;
-        const rightLimit = rect.width * (1 - cornerRatio);
+        const leftLimit = rect.width * 0.20;
+        const rightLimit = rect.width * (1 - 0.20);
         if(relX <= leftLimit){
           const styleFilter = getComputedStyle(video).filter || '';
           const match = styleFilter.match(/brightness([^)]+)/);
@@ -877,13 +826,19 @@
       card.addEventListener('touchmove', (e)=>{ if(!card.classList.contains('landscape-mode')) return; const t = e.touches[0]; moveLandscapeGesture(t.clientY); }, {passive:false});
       card.addEventListener('touchend', ()=>{ if(!card.classList.contains('landscape-mode')) return; endLandscapeGesture(); });
 
-      const sourceUrl = video.querySelector('source')?.src || '';
+      const sourceUrlPlaceholder = "";
+
       video.addEventListener('error', async (e)=>{
         try {
-          const r = await fetch(sourceUrl, { method: 'HEAD', mode: 'cors' });
-          if(!r.ok) showError('Le serveur répond ' + r.status + '.');
+          const src = video.currentSrc || sourceUrlPlaceholder;
+          if (src) {
+            const r = await fetch(src, { method: 'HEAD', mode: 'cors' }).catch(()=>null);
+            if(!r || !r.ok) showError('Le serveur répond ' + (r ? r.status : 'injoignable') + '.');
+          } else {
+            showError('Source introuvable.');
+          }
         } catch(fetchErr){
-          showError('Probable CORS (Access-Control-Allow-Origin absent). Ouvri console pour détails.');
+          showError('Probable CORS (Access-Control-Allow-Origin absent).');
         }
       });
       function showError(msg){ if(errTxt) errTxt.textContent = msg; if(errorBox) errorBox.style.display='block'; }
@@ -1010,160 +965,73 @@
       tryAutoplay();
       showAll();
 
-      window.__player = window.__player || {};
-      window.__player._initialized = true;
-      window.__player.video = video;
-      window.__player.openMenuOverlay = openMenuOverlay;
-      window.__player.closeMenuOverlay = closeMenuOverlay;
-      window.__player.openLangOverlay = openLangOverlay;
-      window.__player.closeLangOverlay = closeLangOverlay;
-      window.__player.allowOverlayNow = allowOverlayNow;
-
-      window.__player.playCustom = async function(src, attachTo){
-        if(!src) return;
-        try {
-          if(menuOverlay.parentNode !== document.body) document.body.appendChild(menuOverlay);
-          if(langOverlay.parentNode !== document.body) document.body.appendChild(langOverlay);
-          attachTo.innerHTML = '';
-          attachTo.appendChild(card);
-          card.classList.remove('hidden-instance');
-          const s = video.querySelector('source');
-          if(s) s.src = src;
-          try { video.src = src; } catch(e){}
-          try { video.load(); } catch(e){}
-          try { await tryAutoplay(); } catch(e){}
-          video.focus && video.focus();
-        } catch(e){}
-      };
-
-      window.__player._internal = {
-        rootClone: clone,
-        card,
-        menuOverlay,
-        langOverlay
+      window.__playerInstance = {
+        root, card, video, openMenuOverlay, closeMenuOverlay, openLangOverlay, closeLangOverlay, allowOverlayNow
       };
     }
 
-    initCustomPlayerFromTemplate();
+    function playMediaWithCustomPlayer(src, attachTo){
+      if (!src) return;
+      if (src.includes("youtube.com") || src.includes("youtu.be")) {
+        const iframe = document.createElement("iframe");
+        iframe.src = normalizeYouTubeEmbed(src);
+        iframe.allow = "autoplay; fullscreen; picture-in-picture";
+        iframe.style.border = "none";
+        iframe.style.display = "block";
+        attachTo.innerHTML = "";
+        attachTo.appendChild(iframe);
+        setTimeout(() => adjustIFrameSize(iframe, attachTo), 60);
+        return;
+      }
+      if (src.includes("vimeo.com")) {
+        const iframe = document.createElement("iframe");
+        iframe.src = normalizeVimeoEmbed(src);
+        iframe.allow = "autoplay; fullscreen; picture-in-picture";
+        iframe.style.border = "none";
+        iframe.style.display = "block";
+        attachTo.innerHTML = "";
+        attachTo.appendChild(iframe);
+        setTimeout(() => adjustIFrameSize(iframe, attachTo), 60);
+        return;
+      }
+      if (!looksLikeVideo(src)) {
+        const imgEl = document.createElement("img");
+        imgEl.src = src;
+        imgEl.loading = "lazy";
+        imgEl.alt = "";
+        imgEl.style.display = "block";
+        imgEl.style.width = "auto";
+        imgEl.style.maxWidth = "100%";
+        imgEl.style.height = "auto";
+        imgEl.style.objectFit = "contain";
+        attachTo.innerHTML = "";
+        attachTo.appendChild(imgEl);
+        imgEl.addEventListener('error', () => {
+          attachTo.innerHTML = '<div style="color:#999;padding:12px;text-align:center">Imaj pa disponib</div>';
+        });
+        return;
+      }
 
-    window._swReg = null;
-    function showUpdateBanner() {
-      if (document.getElementById('sw-update-banner')) return;
-      const banner = document.createElement('div');
-      banner.id = 'sw-update-banner';
-      banner.innerHTML = `
-        <div style="flex:1;text-align:left">Nouvo vèsyon disponib.</div>
-        <div style="display:flex;gap:8px">
-          <button id="sw-update-btn">Mete ajou</button>
-          <button id="sw-dismiss-btn" style="background:transparent;border:1px solid #444;color:#fff;padding:8px 10px;border-radius:6px;cursor:pointer">Fèmen</button>
-        </div>`;
-      document.body.appendChild(banner);
+      ensurePlayerInitialized();
+      const playerRoot = document.getElementById('playerRoot');
+      const card = document.getElementById('cardPlayer');
+      const video = document.getElementById('videoPlayer');
 
-      document.getElementById('sw-update-btn').addEventListener('click', () => {
-        if (!window._swReg) return location.reload();
-        if (window._swReg.waiting) {
-          window._swReg.waiting.postMessage({ type: 'SKIP_WAITING' });
-        }
-        setTimeout(() => location.reload(), 1500);
-      });
-
-      document.getElementById('sw-dismiss-btn').addEventListener('click', () => {
-        const el = document.getElementById('sw-update-banner');
-        if (el && el.parentNode) el.parentNode.removeChild(el);
-      });
+      attachTo.innerHTML = "";
+      attachTo.appendChild(card);
+      playerRoot.style.display = 'block';
+      card.classList.remove('landscape-mode');
+      card.style.maxWidth = '100%';
+      const srcNode = video.querySelector('source');
+      if (srcNode) srcNode.src = src;
+      try { video.src = src; } catch(e){}
+      try { video.load(); } catch(e){}
+      try { video.play().catch(()=>{}); } catch(e){}
     }
 
-    navigator.serviceWorker && navigator.serviceWorker.addEventListener('controllerchange', () => {
-      try {
-        if (!window.__sw_reload_attempted) {
-          window.__sw_reload_attempted = true;
-          location.reload();
-        }
-      } catch(e){}
-    });
-
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js?v=2')
-          .then(reg => {
-            window._swReg = reg;
-            if (reg.waiting) {
-              showUpdateBanner();
-            }
-            reg.onupdatefound = () => {
-              const newSW = reg.installing;
-              newSW.addEventListener('statechange', () => {
-                if (newSW.state === 'installed') {
-                  if (navigator.serviceWorker.controller) {
-                    showUpdateBanner();
-                  }
-                }
-              });
-            };
-          })
-          .catch(err => {});
-      });
-    }
-
-    document.addEventListener('gesturestart', function(e) { e.preventDefault(); });
-    document.addEventListener('touchmove', function (e) {
-      if (e.scale && e.scale !== 1) { e.preventDefault(); }
-    }, { passive: false });
-
-    (function() {
-      let lastTouch = 0;
-      document.addEventListener('touchend', function(e) {
-        const now = Date.now();
-        if (now - lastTouch <= 300) {
-          const tag = (e.target && e.target.tagName) || '';
-          if (['INPUT','TEXTAREA','SELECT'].indexOf(tag) === -1) {
-            e.preventDefault();
-          }
-        }
-        lastTouch = now;
-      }, { passive: false });
-    })();
-
-    (function(){
-      const PAYPAL_URL = 'https://www.paypal.com/ncp/payment/MCJHCJ85AC5AJ';
-      const logo = document.querySelector('.header .logo');
-      if(!logo) return;
-      if (!logo.hasAttribute('tabindex')) logo.setAttribute('tabindex', '0');
-      logo.setAttribute('role', 'link');
-      let handled = false;
-      function openPaypal(){
-        window.open(PAYPAL_URL, '_blank', 'noopener,noreferrer');
-      }
-      logo.addEventListener('pointerdown', ()=>{ handled=false; });
-      logo.addEventListener('pointerup', ()=>{ handled=true; openPaypal(); });
-      logo.addEventListener('click', ()=>{ if(!handled) openPaypal(); });
-      logo.addEventListener('keydown', (e)=>{
-        if(e.key==='Enter' || e.key===' '){
-          e.preventDefault();
-          openPaypal();
-        }
-      });
-    })();
-
-    document.addEventListener('copy', function(e) {
-      try {
-        const sel = window.getSelection();
-        let node = sel && (sel.anchorNode || sel.focusNode);
-        if (node && node.nodeType === 3) node = node.parentElement;
-        const card = node && node.closest ? node.closest('.post-card') : null;
-        let nameEl = card ? card.querySelector('.post-name') : null;
-        if (!nameEl) nameEl = document.querySelector('.post-name');
-        const text = nameEl ? nameEl.textContent.trim() : '';
-        e.preventDefault();
-        if (e.clipboardData) {
-          e.clipboardData.setData('text/plain', text);
-        } else if (window.clipboardData) {
-          window.clipboardData.setData('Text', text);
-        }
-      } catch (err) {
-        try { e.preventDefault(); } catch(e){}
-      }
-    }, false);
+    window.getAdLogs = function() {
+      try { return JSON.parse(localStorage.getItem('adLogs') || '[]'); } catch(e) { return []; }
+    };
   </script>
 
   <script type='text/javascript' src='//pl28135197.effectivegatecpm.com/3b/5a/09/3b5a097d28211945158c20a3f4879260.js'></script>
