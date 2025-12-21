@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Adam_D'H7</title>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Adam_D'H7" />
+  <link rel="apple-touch-icon" href="https://res.cloudinary.com/dckwrqrur/image/upload/v1757205404/tf-stream-url/Screenshot_20250906_202106_Chrome_go9vhu.png" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <style>
+    :root{
+      --card-max-width:920px;
+      --card-min-height:80px;
+      --card-max-height:80vh;
+      --mini-w:100px;
+      --mini-h:70px;
+    }
+    
+    *, *:before, *:after {
+      -webkit-user-select: none !important;
+      -moz-user-select: none !important;
+      -ms-user-select: none !important;
+      user-select: none !important;
+      -webkit-user-drag: none !important;
+      user-drag: none !important;
+      -webkit-touch-callout: none !important;
+    }
+
+    input, textarea {
+      -webkit-user-select: text !important;
+      user-select: text !important;
+    }
+
+    img, video, iframe {
+      pointer-events: none !important;
+    }
+
+    .post-thumb-container {
+      pointer-events: auto !important;
+    }
+
+    html,body{height:100%; margin:0; padding:0; background:#000; color:#fff; font-family:'Roboto',sans-serif; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; overflow:hidden;}
+    body{padding-bottom:60px;}
+
+    .header{ padding:18px 16px; text-align:center; position:fixed; top:0; left:0; right:0; backdrop-filter: blur(10px); background: rgba(0,0,0,0.7); z-index:10; display:flex; flex-direction:column; align-items:center; gap:8px; touch-action:manipulation; }
+    .logo{ font-size:26px; font-weight:700; background:linear-gradient(90deg,#fff,#000); -webkit-background-clip:text; -webkit-text-fill-color:transparent; cursor: pointer; }
+    .search-container{ display:flex; justify-content:center; padding:8px 20px; width:100%; }
+    .search-box{ width:100%; max-width:500px; background:#1c1c1e; border:none; padding:10px 14px; border-radius:12px; color:#fff; font-size:15px; outline:none; }
+
+    .loader-wrap{ position:relative; height:28px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+    .loader{ display:none; align-items:center; gap:8px; font-size:13px; color:#ddd; padding:6px 10px; border-radius:18px; background:rgba(255,255,255,0.02); pointer-events:auto; }
+    .loader .spinner{ width:16px; height:16px; border:2px solid rgba(255,255,255,0.12); border-top-color: #fff; border-radius:50%; animation:spin 1s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #explorerView{ position:absolute; top:76px; left:0; right:0; bottom:0; padding:18px; overflow-y:auto; background:#000; -webkit-overflow-scrolling:touch; box-sizing:border-box; }
+
+    .post-card{ background:#111; border-radius:14px; padding:14px; margin-bottom:18px; box-shadow:0 2px 8px rgba(0,0,0,0.7); }
+    .post-name{ font-weight:700; font-size:16px; margin:8px 0; color:#fff; text-align:left; }
+    .post-text{ font-size:14px; color:#ddd; margin-bottom:10px; white-space:pre-wrap; text-align:left; }
+    .post-desc{ font-size:13px; color:#ccc; margin-top:8px; text-align:left; }
+
+    .media-wrap{ text-align:center; margin: 0 0 10px 0; }
+    .post-thumb-container { position:relative; display:inline-block; box-sizing:border-box; max-width:var(--card-max-width); width:auto; background:#000; border-radius:12px; overflow:hidden; padding:0; box-shadow: inset 0 0 18px rgba(0,0,0,0.45), 0 6px 18px rgba(0,0,0,0.6); min-height:var(--card-min-height); max-height:var(--card-max-height); cursor: pointer; }
+    .post-thumb, .post-thumb img, .post-thumb video, .post-thumb iframe { display:block; width:auto; max-width:100%; height:auto; max-height:calc(var(--card-max-height)); object-fit:contain; background:#000; border-radius:0; }
+    .post-thumb iframe, .post-thumb video { display:block; width:100%; height:auto; }
+
+    .social-section{ margin-top:10px; padding-top:10px; border-top:1px solid #333; display:flex; justify-content:center; gap:18px; flex-wrap:wrap; }
+    .social-section a{ color:#fff; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:10px; background:rgba(255,255,255,0.03); }
+    .social-section i{ font-size:18px; }
+
+    .ad-overlay{ position:fixed; inset:0; background:#000; display:none; justify-content:center; align-items:center; z-index:10000; }
+    .ad-container{ position:relative; max-width:90%; width:100%; height:80%; background:#111; padding:0; border-radius:10px; overflow:hidden; }
+    .ad-container iframe{ width:100%; height:100%; border:none; background:#000; }
+    .skip-btn{ position:absolute; top:10px; right:10px; background:rgba(0,0,0,0.5); border:none; color:#fff; padding:8px 12px; border-radius:6px; cursor:pointer; display:none; z-index:1001; }
+
+    @media (max-width:600px) { :root { --mini-w:86px; --mini-h:62px; } }
+
+    #sw-update-banner{ position:fixed; left:12px; right:12px; bottom:12px; background:#111; color:#fff; padding:10px 14px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.4); font-family:sans-serif; text-align:center; z-index:99999; display:flex; align-items:center; justify-content:center; gap:12px; }
+    #sw-update-banner button{ background:#1a73e8; color:#fff; border:0; padding:8px 12px; border-radius:6px; cursor:pointer; }
+
+    *::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+    html, body, #explorerView { -ms-overflow-style: none; scrollbar-width: none; }
+    :focus { outline: none; }
+  </style>
+</head>
+<body>
+  <div class="header" id="siteHeader">
+    <div class="logo">Adam_D'H7</div>
+    <div class="search-container">
+      <input id="searchBox" class="search-box" placeholder="Rechèch..." autocomplete="off" />
+    </div>
+    <div class="loader-wrap" aria-live="polite">
+      <div id="loader" class="loader" aria-hidden="true">
+        <span class="spinner" aria-hidden="true"></span>
+        <span class="loader-text">Chargement...</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="explorerView" role="main" aria-live="polite"></div>
+
+  <div id="adOverlay" class="ad-overlay" aria-hidden="true" role="dialog">
+    <div class="ad-container">
+      <iframe id="prerollFrame" src="about:blank" allow="autoplay; fullscreen"></iframe>
+      <button id="skipBtn" class="skip-btn" onclick="closeAd()">Ignorer la pub</button>
+    </div>
+  </div>
+
+  <script>
+    const AD_REDIRECT_URL = "https://www.effectivegatecpm.com/sb8frb30?key=b74cd3abdfc6db3be0c0b8d215fcb582";
+    let allData = [];
+    const searchInput = document.getElementById('searchBox');
+    const loaderEl = document.getElementById('loader');
+    const explorerEl = document.getElementById('explorerView');
+    const headerEl = document.getElementById('siteHeader');
+
+    function showLoader(){ if(loaderEl) loaderEl.style.display = 'inline-flex'; }
+    function hideLoader(){ if(loaderEl) loaderEl.style.display = 'none'; }
+
+    function adjustExplorerTop(){
+      const h = headerEl ? headerEl.offsetHeight : 76;
+      explorerEl.style.top = h + 'px';
+    }
+
+    function shuffle(array) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+      return array;
+    }
+
+    function buildCardsFragment(data){
+      const frag = document.createDocumentFragment();
+      data.forEach(post => {
+        if (((post.Catégorie||post.Categorie||"")).toString().toLowerCase() !== "poste") return;
+        const card = document.createElement("div");
+        card.className = "post-card";
+        card.innerHTML = `
+          <div class="post-text">${post.Texte || post.Bio || ""}</div>
+          <div class="post-name">${post.Name || ""}</div>
+          <div class="media-wrap">
+            <div class="post-thumb-container">
+              <img class="post-thumb" src="${post["Url Thumb"] || post.image || ""}" loading="lazy">
+            </div>
+          </div>
+          <div class="post-desc">${post.Description || ""}</div>
+        `;
+        const thumb = card.querySelector('.post-thumb-container');
+        thumb.addEventListener("click", () => {
+          window.open(AD_REDIRECT_URL, '_blank');
+          playMedia(post.video || post["Url Video"] || post.image || "", thumb);
+        });
+        frag.appendChild(card);
+      });
+      return frag;
+    }
+
+    function playMedia(src, container){
+      container.innerHTML = "";
+      if (src.includes("youtube.com") || src.includes("youtu.be")) {
+        const id = src.includes("youtu.be/") ? src.split("youtu.be/")[1] : new URL(src).searchParams.get('v');
+        container.innerHTML = `<iframe src="https://www.youtube.com/embed/${id}?autoplay=1" allow="autoplay; fullscreen" style="width:100%;aspect-ratio:16/9;border:0;"></iframe>`;
+      } else if (/\.(mp4|webm|mov)$/i.test(src.split('?')[0])) {
+        container.innerHTML = `<video src="${src}" controls autoplay playsinline style="width:100%;height:auto;"></video>`;
+      } else {
+        container.innerHTML = `<img src="${src}" style="width:100%;height:auto;">`;
+      }
+    }
+
+    function displayExplorer(data){
+      explorerEl.innerHTML = "";
+      explorerEl.appendChild(buildCardsFragment(data));
+      displaySocialLinks();
+    }
+
+    function displaySocialLinks(){
+      const s = document.createElement("div");
+      s.className = "social-section";
+      s.innerHTML = `
+        <a href="https://facebook.com"><i class="fab fa-facebook-f"></i></a>
+        <a href="mailto:dhaitiadam@gmail.com"><i class="fas fa-envelope"></i></a>
+        <a href="https://whatsapp.com"><i class="fab fa-whatsapp"></i></a>
+      `;
+      explorerEl.appendChild(s);
+    }
+
+    searchInput.addEventListener('input', (e) => {
+      const val = e.target.value.toLowerCase();
+      const filtered = allData.filter(p => (p.Name||"").toLowerCase().includes(val) || (p.Texte||"").toLowerCase().includes(val));
+      displayExplorer(filtered);
+    });
+
+    window.addEventListener('resize', adjustExplorerTop);
+    document.addEventListener('DOMContentLoaded', () => {
+      adjustExplorerTop();
+      showLoader();
+      fetch("index.json")
+        .then(r => r.json())
+        .then(files => Promise.all(files.map(f => fetch(f).then(r => r.json()))))
+        .then(jsons => {
+          jsons.forEach(d => Array.isArray(d) ? allData.push(...d) : allData.push(d));
+          shuffle(allData);
+          displayExplorer(allData);
+          hideLoader();
+        }).catch(() => hideLoader());
+    });
+
+    (function(){
+      const logo = document.querySelector('.logo');
+      logo.addEventListener('click', () => window.open('https://www.paypal.com/ncp/payment/MCJHCJ85AC5AJ', '_blank'));
+    })();
+
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F12' || (e.ctrlKey && ['u','i','j','s','c','p'].includes(e.key.toLowerCase()))) e.preventDefault();
+    });
+    window.addEventListener('dragstart', e => e.preventDefault());
+    document.addEventListener('copy', e => {
+      e.preventDefault();
+      if (e.clipboardData) e.clipboardData.setData('text/plain', '');
+    });
+  </script>
+</body>
+</html>
