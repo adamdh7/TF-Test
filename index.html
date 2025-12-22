@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>D'H7 Digital</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #000000;
+            --glass: rgba(10, 10, 10, 0.75);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            background-color: var(--bg);
+            color: white;
+            font-family: 'Inter', sans-serif;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Header flou ki bay efè disparisyon */
+        .glass-header {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: var(--glass);
+            backdrop-filter: blur(20px) saturate(180%);
+            -webkit-backdrop-filter: blur(20px) saturate(180%);
+            border-bottom: 1px solid var(--border);
+            padding-top: env(safe-area-inset-top);
+        }
+
+        .screen {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+            transition: transform 0.3s ease-out;
+        }
+
+        /* Animasyon paj yo */
+        .screen.hidden { transform: translateX(100%); pointer-events: none; }
+        .screen.active { transform: translateX(0); pointer-events: auto; }
+
+        /* Mesaj */
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            /* Mask pou fè mesaj yo disparèt dousman anba header lan */
+            mask-image: linear-gradient(to bottom, transparent, black 10%, black 90%, transparent);
+        }
+
+        .bubble {
+            max-width: 80%;
+            padding: 12px 16px;
+            margin-bottom: 8px;
+            font-size: 15px;
+            line-height: 1.4;
+        }
+
+        .bubble.me {
+            align-self: flex-end;
+            background: #ffffff;
+            color: #000000;
+            border-radius: 20px 20px 4px 20px;
+            font-weight: 600;
+        }
+
+        .bubble.them {
+            align-self: flex-start;
+            background: #1c1c1e;
+            color: #ffffff;
+            border-radius: 20px 20px 20px 4px;
+        }
+
+        .input-area {
+            padding: 15px 20px calc(15px + env(safe-area-inset-bottom));
+            background: var(--bg);
+            border-top: 1px solid var(--border);
+        }
+
+        input { background: #121212; color: white; border: 1px solid #222; border-radius: 25px; padding: 12px 20px; outline: none; width: 100%; }
+        
+        .contact-item {
+            padding: 15px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .avatar { width: 50px; height: 50px; background: #222; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; }
+    </style>
+</head>
+<body>
+
+    <div id="scr-home" class="screen active">
+        <header class="glass-header p-6 flex justify-between items-end">
+            <h1 class="text-4xl font-black tracking-tighter">D'H7</h1>
+            <div class="flex gap-6 pb-1">
+                <button onclick="router.go('chèche')"><svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg></button>
+                <button onclick="router.go('menu')" class="text-2xl font-bold">•••</button>
+            </div>
+        </header>
+        <div id="contact-list" class="flex-1 overflow-y-auto pt-4">
+            </div>
+    </div>
+
+    <div id="scr-chat" class="screen hidden">
+        <header class="glass-header p-4 flex items-center gap-4">
+            <button onclick="router.go('')" class="text-white"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M15 19l-7-7 7-7"></path></svg></button>
+            <h2 id="chat-title" class="text-xl font-black italic uppercase">---</h2>
+        </header>
+        <div id="chat-messages" class="chat-container flex flex-col"></div>
+        <div class="input-area flex gap-2">
+            <input type="text" id="msg-input" placeholder="Mesaj...">
+            <button onclick="sendMessage()" class="bg-white text-black px-5 rounded-full font-bold">Voye</button>
+        </div>
+    </div>
+
+    <div id="scr-search" class="screen hidden">
+        <header class="glass-header p-4">
+            <div class="flex items-center gap-4">
+                <input type="text" id="search-q" oninput="doSearch()" placeholder="Chèche non oswa DH7..." autofocus>
+                <button onclick="router.go('')" class="text-zinc-500 font-bold">ANILE</button>
+            </div>
+        </header>
+        <div id="search-results" class="flex-1 overflow-y-auto p-4"></div>
+    </div>
+
+    <div id="scr-menu" class="screen hidden">
+        <div class="flex-1 flex flex-col items-center justify-center p-10">
+            <div class="w-24 h-24 bg-white text-black rounded-full mb-6 flex items-center justify-center text-5xl font-black" id="m-init">?</div>
+            <h2 id="m-name" class="text-4xl font-black mb-1">---</h2>
+            <p id="m-dh7" class="text-zinc-500 mb-10 tracking-widest font-mono text-sm">---</p>
+            <div class="w-full space-y-4">
+                <button onclick="logout()" class="w-full py-5 text-red-500 font-black tracking-widest border border-red-500/20 rounded-2xl">DEKONEKTE</button>
+                <button onclick="router.go('')" class="w-full py-4 text-zinc-500 font-bold">RETOUNEN</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = "https://dh7.adamdh7.org";
+        let user = JSON.parse(localStorage.getItem('dh7_session'));
+        let activePeer = null;
+        let chatInterval = null;
+
+        // --- ROUTER SYSTEM ---
+        const router = {
+            go(path) {
+                const url = path === '' ? '/' : `/${path}`;
+                history.pushState(null, '', url);
+                this.handle();
+            },
+            handle() {
+                const path = window.location.pathname.replace('/', '');
+                document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+                
+                if (!user) {
+                    // Si pa gen login, ou ka ajoute paj login la la
+                    alert("Konekte davans!"); 
+                    return;
+                }
+
+                if (path === 'chèche') {
+                    document.getElementById('scr-search').classList.add('active');
+                } else if (path === 'menu') {
+                    showMenu();
+                    document.getElementById('scr-menu').classList.add('active');
+                } else if (path.startsWith('TF-')) {
+                    openChat(path);
+                    document.getElementById('scr-chat').classList.add('active');
+                } else {
+                    loadContacts();
+                    document.getElementById('scr-home').classList.add('active');
+                    if(chatInterval) clearInterval(chatInterval);
+                }
+            }
+        };
+
+        window.onpopstate = () => router.handle();
+
+        // --- LOGIK ---
+        async function loadContacts() {
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            const container = document.getElementById('contact-list');
+            container.innerHTML = "";
+            users.forEach(u => {
+                if(u.tfid === user.tfid) return;
+                const div = document.createElement('div');
+                div.className = "contact-item";
+                div.innerHTML = `<div class="avatar">${u.nom[0]}</div><div><p class="font-black text-lg">${u.prenom} ${u.nom}</p></div>`;
+                div.onclick = () => router.go(u.tfid);
+                container.appendChild(div);
+            });
+        }
+
+        async function openChat(tfid) {
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            activePeer = users.find(u => u.tfid === tfid);
+            if(activePeer) {
+                document.getElementById('chat-title').innerText = `${activePeer.prenom} ${activePeer.nom}`;
+                fetchMessages();
+                if(chatInterval) clearInterval(chatInterval);
+                chatInterval = setInterval(fetchMessages, 3000);
+            }
+        }
+
+        async function fetchMessages() {
+            if(!activePeer) return;
+            const res = await fetch(`${API}/messages`, {
+                method: 'POST',
+                body: JSON.stringify({ user1_tfid: user.tfid, user2_tfid: activePeer.tfid })
+            });
+            const msgs = await res.json();
+            const container = document.getElementById('chat-messages');
+            container.innerHTML = "";
+            msgs.forEach(m => {
+                const div = document.createElement('div');
+                div.className = `bubble ${m.from === user.tfid ? 'me' : 'them'}`;
+                div.innerText = m.text;
+                container.appendChild(div);
+            });
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('msg-input');
+            const text = input.value.trim();
+            if(!text || !activePeer) return;
+            input.value = "";
+            await fetch(`${API}/send`, {
+                method: 'POST',
+                body: JSON.stringify({ sender_tfid: user.tfid, receiver_tfid: activePeer.tfid, message: text })
+            });
+            fetchMessages();
+        }
+
+        async function doSearch() {
+            const q = document.getElementById('search-q').value.toLowerCase();
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            const filtered = users.filter(u => (u.nom+u.prenom+u.dh7).toLowerCase().includes(q) && u.tfid !== user.tfid);
+            const container = document.getElementById('search-results');
+            container.innerHTML = filtered.length ? "" : "<p class='text-center mt-10 text-zinc-500'>Pa jwenn itilizatè sa</p>";
+            filtered.forEach(u => {
+                const div = document.createElement('div');
+                div.className = "contact-item bg-zinc-900 mb-2 rounded-2xl border-none";
+                div.innerHTML = `<div class="avatar bg-white text-black">${u.nom[0]}</div><div><p class="font-black">${u.prenom} ${u.nom}</p></div>`;
+                div.onclick = () => router.go(u.tfid);
+                container.appendChild(div);
+            });
+        }
+
+        function showMenu() {
+            document.getElementById('m-name').innerText = `${user.prenom} ${user.nom}`;
+            document.getElementById('m-dh7').innerText = user.dh7;
+            document.getElementById('m-init').innerText = user.nom[0];
+        }
+
+        function logout() { localStorage.clear(); location.href = "/"; }
+
+        // Initialisation
+        if(!user) {
+            // Pou tès: si pa gen user, kreyé yon fo youn oswa voye l nan login
+            console.log("No session found");
+        } else {
+            router.handle();
+        }
+        
+        document.getElementById('msg-input').onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+    </script>
+</body>
+</html>
