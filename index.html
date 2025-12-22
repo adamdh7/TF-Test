@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>D'H7 Digital Messenger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: #000000;
+            color: #ffffff;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+        .custom-scroll::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: #333333;
+            border-radius: 2px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        input, textarea, button {
+            transition: all 0.2s ease;
+        }
+        input:focus, textarea:focus {
+            border-color: #007aff !important;
+            outline: none;
+        }
+        #auth-section, #contacts-section, #chat-section, #menu-modal {
+            position: fixed;
+            inset: 0;
+            background: linear-gradient(to bottom, #000000, #111111);
+            overflow-y: auto;
+        }
+        #chat-section {
+            background: linear-gradient(to bottom, #000000, #0a0a0a);
+        }
+        .search-bar {
+            width: 100%;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+        }
+        .search-input {
+            background: transparent;
+            border: none;
+            width: 100%;
+            padding: 8px 0;
+            color: #fff;
+            font-size: 16px;
+        }
+        .search-input::placeholder {
+            color: #666;
+        }
+        .logo {
+            text-shadow: 0 0 5px rgba(0,0,0,0.5);
+            filter: blur(0.5px);
+        }
+        .message {
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-width: 80%;
+        }
+        .unread-badge {
+            background: #007aff;
+            color: white;
+            font-size: 12px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            min-width: 20px;
+            text-align: center;
+        }
+        #chat-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: inherit;
+            backdrop-filter: blur(12px);
+        }
+        #msg-input {
+            resize: none;
+            overflow: hidden;
+            min-height: 40px;
+            max-height: 120px;
+        }
+        .language-overlay {
+            position: fixed;
+            bottom: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 20px;
+            width: 80%;
+            max-width: 300px;
+            z-index: 100;
+        }
+        .language-option {
+            padding: 10px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .language-option:last-child {
+            border-bottom: none;
+        }
+        .language-option:hover {
+            background: rgba(255,255,255,0.05);
+        }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden antialiased">
+
+    <div id="auth-section" class="flex items-center justify-center p-4 hidden">
+        <div class="w-full max-w-sm p-8 rounded-3xl glass shadow-2xl">
+            <h1 class="text-4xl font-black text-center mb-2 tracking-tight logo" data-key="logo">D'H7</h1>
+            <p class="text-center text-zinc-400 mb-8 text-xs uppercase tracking-widest" data-key="subtitle">Digital Messenger</p>
+
+            <div id="login-form" class="space-y-4">
+                <input type="text" id="login-id" data-key="placeholder-tfid" placeholder="TFID oswa DH7" class="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                <input type="password" id="login-pass" data-key="placeholder-password" placeholder="Modpas" class="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                <button onclick="login()" class="w-full bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700" data-key="connect">Konekte</button>
+                <p class="text-center text-sm text-zinc-400" data-key="no-account">Pako gen kont? <button onclick="toggleAuth()" class="text-blue-400 hover:underline" data-key="register">Enskri</button></p>
+            </div>
+
+            <div id="register-form" class="hidden space-y-4">
+                <div class="grid grid-cols-2 gap-3">
+                    <input type="text" id="reg-nom" data-key="placeholder-lastname" placeholder="Nom" class="p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                    <input type="text" id="reg-prenom" data-key="placeholder-firstname" placeholder="Prenom" class="p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                </div>
+                <input type="text" id="reg-dh7" data-key="placeholder-dh7" placeholder="Chwazi DH7 (ex: adam@dh7.tf)" class="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                <input type="password" id="reg-pass" data-key="placeholder-password" placeholder="Modpas" class="w-full p-3 rounded-xl bg-zinc-900 border border-zinc-700 text-white focus:border-blue-500">
+                <button onclick="register()" class="w-full bg-blue-600 text-white font-semibold py-3 rounded-xl hover:bg-blue-700" data-key="create-account">Kreye Kont</button>
+                <button onclick="toggleAuth()" class="w-full text-zinc-400 text-sm hover:underline" data-key="back-to-login">Retounen nan Login</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="contacts-section" class="flex flex-col h-full p-4">
+        <div class="flex justify-between items-center mb-4">
+            <button onclick="goRoute('menu')" class="text-zinc-400 hover:text-blue-400 text-xl font-bold">•••</button>
+            <h2 class="text-xl font-black tracking-tight logo" data-key="logo">D'H7</h2>
+            <div class="w-6"></div>
+        </div>
+        <div class="search-bar mb-4">
+            <input type="text" class="search-input" data-key="search-placeholder" placeholder="Chèche" oninput="liveSearchContacts()">
+        </div>
+        <div id="contact-list" class="flex-1 overflow-y-auto custom-scroll space-y-3">
+        </div>
+    </div>
+
+    <div id="chat-section" class="hidden flex flex-col h-full relative">
+        <div id="chat-header" class="p-4 border-b border-zinc-800 flex items-center gap-3 glass">
+            <button onclick="goRoute('')" class="text-white hover:text-blue-400">←</button>
+            <div>
+                <p id="active-peer-name" class="font-semibold text-lg">---</p>
+                <p id="active-peer-tfid" class="text-xs text-zinc-400 font-mono tracking-wide uppercase">---</p>
+            </div>
+        </div>
+        
+        <div id="chat-messages" class="flex-1 overflow-y-auto p-6 flex flex-col space-y-4 custom-scroll pb-24">
+        </div>
+
+        <div class="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black to-transparent">
+            <div class="flex gap-2 items-end bg-zinc-900 rounded-xl p-2 border border-zinc-800">
+                <textarea id="msg-input" data-key="message-placeholder" placeholder="Ekri yon mesaj..." class="flex-1 bg-transparent border-none p-2 outline-none text-white" rows="1" oninput="autoResize(this)"></textarea>
+                <button onclick="sendMessage()" class="p-2 bg-transparent text-blue-600 hover:text-blue-700">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
+                        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="menu-modal" class="hidden flex flex-col items-center justify-center text-center p-8">
+        <div class="w-20 h-20 bg-zinc-800 rounded-full mb-6 flex items-center justify-center text-3xl font-black border border-zinc-700" id="profile-initial">?</div>
+        <h3 id="profile-name" class="text-2xl font-semibold mb-1">---</h3>
+        <p id="profile-dh7" class="text-zinc-400 mb-8 tracking-widest text-sm">---</p>
+        
+        <div class="w-full max-w-xs space-y-4">
+            <div class="bg-zinc-900 p-4 rounded-xl border border-zinc-800 text-left">
+                <p class="text-xs text-zinc-500 uppercase font-semibold tracking-wide" data-key="personal-tfid">TFID Pèsonèl</p>
+                <p id="profile-tfid" class="font-mono text-blue-400 text-sm">---</p>
+            </div>
+            <button onclick="showLanguageSelector()" class="w-full text-white font-semibold py-3 rounded-xl hover:bg-zinc-800/50" data-key="language">Langue</button>
+            <button onclick="logout()" class="w-full text-red-500 font-semibold py-3 rounded-xl hover:bg-red-500/20" data-key="logout">Dekonekte</button>
+            <button onclick="goRoute('')" class="w-full text-zinc-400 py-3 rounded-xl hover:bg-zinc-800/50" data-key="close">Fèmen</button>
+        </div>
+    </div>
+
+    <div id="language-overlay" class="language-overlay hidden">
+        <div class="language-option" onclick="changeLanguage('es')">Espagnol</div>
+        <div class="language-option" onclick="changeLanguage('en')">Anglais</div>
+        <div class="language-option" onclick="changeLanguage('fr')">Français</div>
+        <div class="language-option" onclick="changeLanguage('ht')">Kreyòl</div>
+    </div>
+
+    <script>
+        const API = "https://dh7.adamdh7.org";
+        let currentUser = JSON.parse(localStorage.getItem('dh7_user')) || null;
+        let activePeer = null;
+        let chatInterval = null;
+        let lastViewed = JSON.parse(localStorage.getItem('lastViewed')) || {};
+        let currentLanguage = localStorage.getItem('language') || 'ht';
+        const translations = {
+            ht: {
+                logo: "D'H7",
+                subtitle: "Digital Messenger",
+                placeholder-tfid: "TFID oswa DH7",
+                placeholder-password: "Modpas",
+                connect: "Konekte",
+                no-account: "Pako gen kont?",
+                register: "Enskri",
+                placeholder-lastname: "Nom",
+                placeholder-firstname: "Prenom",
+                placeholder-dh7: "Chwazi DH7 (ex: adam@dh7.tf)",
+                create-account: "Kreye Kont",
+                back-to-login: "Retounen nan Login",
+                search-placeholder: "Chèche",
+                personal-tfid: "TFID Pèsonèl",
+                language: "Langue",
+                logout: "Dekonekte",
+                close: "Fèmen",
+                message-placeholder: "Ekri yon mesaj..."
+            },
+            fr: {
+                logo: "D'H7",
+                subtitle: "Messagerie Numérique",
+                placeholder-tfid: "TFID ou DH7",
+                placeholder-password: "Mot de passe",
+                connect: "Se connecter",
+                no-account: "Pas encore de compte ?",
+                register: "S'inscrire",
+                placeholder-lastname: "Nom",
+                placeholder-firstname: "Prénom",
+                placeholder-dh7: "Choisir DH7 (ex: adam@dh7.tf)",
+                create-account: "Créer un Compte",
+                back-to-login: "Retour à la Connexion",
+                search-placeholder: "Rechercher",
+                personal-tfid: "TFID Personnel",
+                language: "Langue",
+                logout: "Se déconnecter",
+                close: "Fermer",
+                message-placeholder: "Écrire un message..."
+            },
+            en: {
+                logo: "D'H7",
+                subtitle: "Digital Messenger",
+                placeholder-tfid: "TFID or DH7",
+                placeholder-password: "Password",
+                connect: "Login",
+                no-account: "No account yet?",
+                register: "Sign up",
+                placeholder-lastname: "Last Name",
+                placeholder-firstname: "First Name",
+                placeholder-dh7: "Choose DH7 (ex: adam@dh7.tf)",
+                create-account: "Create Account",
+                back-to-login: "Back to Login",
+                search-placeholder: "Search",
+                personal-tfid: "Personal TFID",
+                language: "Language",
+                logout: "Logout",
+                close: "Close",
+                message-placeholder: "Type a message..."
+            },
+            es: {
+                logo: "D'H7",
+                subtitle: "Mensajero Digital",
+                placeholder-tfid: "TFID o DH7",
+                placeholder-password: "Contraseña",
+                connect: "Conectar",
+                no-account: "¿No tienes cuenta?",
+                register: "Registrarse",
+                placeholder-lastname: "Apellido",
+                placeholder-firstname: "Nombre",
+                placeholder-dh7: "Elegir DH7 (ej: adam@dh7.tf)",
+                create-account: "Crear Cuenta",
+                back-to-login: "Volver al Inicio de Sesión",
+                search-placeholder: "Buscar",
+                personal-tfid: "TFID Personal",
+                language: "Idioma",
+                logout: "Cerrar Sesión",
+                close: "Cerrar",
+                message-placeholder: "Escribe un mensaje..."
+            }
+        };
+
+        function goRoute(path) {
+            window.history.pushState({}, '', '/' + path);
+            handleRoute();
+        }
+
+        window.onpopstate = handleRoute;
+
+        function handleRoute() {
+            const path = window.location.pathname.replace('/', '');
+            
+            document.getElementById('menu-modal').classList.add('hidden');
+            document.getElementById('chat-section').classList.add('hidden');
+            document.getElementById('contacts-section').classList.add('hidden');
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('language-overlay').classList.add('hidden');
+            
+            if (!currentUser) {
+                document.getElementById('auth-section').classList.remove('hidden');
+                return;
+            }
+
+            if (path === 'menu') {
+                showMenu();
+            } else if (path.startsWith('TF-')) {
+                document.getElementById('chat-section').classList.remove('hidden');
+                openChatFromURL(path);
+            } else {
+                document.getElementById('contacts-section').classList.remove('hidden');
+                loadRecentChats();
+            }
+        }
+
+        async function login() {
+            let id = document.getElementById('login-id').value.trim();
+            if (!id.includes('@dh7.tf') && !id.startsWith('TF-')) {
+                id += '@dh7.tf';
+            }
+            const pass = document.getElementById('login-pass').value;
+            const res = await fetch(`${API}/login`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ identifier: id, password: pass }) 
+            });
+            const data = await res.json();
+            if (data.success) {
+                currentUser = data.user;
+                localStorage.setItem('dh7_user', JSON.stringify(data.user));
+                goRoute('');
+            } else { alert(data.error); }
+        }
+
+        async function register() {
+            const nom = document.getElementById('reg-nom').value;
+            const prenom = document.getElementById('reg-prenom').value;
+            let dh7 = document.getElementById('reg-dh7').value.trim();
+            if (!dh7.includes('@dh7.tf')) {
+                dh7 += '@dh7.tf';
+            }
+            const pass = document.getElementById('reg-pass').value;
+            const res = await fetch(`${API}/register`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nom, prenom, dh7, password: pass }) 
+            });
+            const data = await res.json();
+            if (data.success) {
+                toggleAuth();
+            } else { alert(data.error); }
+        }
+
+        function logout() {
+            localStorage.clear();
+            location.href = "/";
+        }
+
+        function toggleAuth() {
+            document.getElementById('login-form').classList.toggle('hidden');
+            document.getElementById('register-form').classList.toggle('hidden');
+        }
+
+        async function loadRecentChats() {
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            const container = document.getElementById('contact-list');
+            container.innerHTML = "";
+            const promises = users.map(async u => {
+                if (u.tfid === currentUser.tfid) return null;
+                const msgsRes = await fetch(`${API}/messages`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user1_tfid: currentUser.tfid, user2_tfid: u.tfid })
+                });
+                const messages = await msgsRes.json();
+                const lastView = lastViewed[u.tfid] || 0;
+                const unread = messages.filter(m => m.from === u.tfid && (m.timestamp || Date.now()) > lastView).length;
+                const div = document.createElement('div');
+                div.className = "p-3 glass rounded-xl cursor-pointer hover:bg-zinc-800/50 transition flex justify-between items-center";
+                div.innerHTML = `
+                    <div onclick="goRoute('${u.tfid}')">
+                        <p class="font-semibold">${u.prenom} ${u.nom}</p>
+                        <p class="text-xs text-zinc-400 font-mono">${u.tfid}</p>
+                    </div>
+                    ${unread > 0 ? `<span class="unread-badge">+${unread}</span>` : ''}
+                `;
+                return div;
+            });
+            const contacts = await Promise.all(promises);
+            contacts.filter(c => c).forEach(c => container.appendChild(c));
+        }
+
+        function liveSearchContacts() {
+            const q = document.querySelector('.search-input').value.toLowerCase();
+            const contacts = document.querySelectorAll('#contact-list > div');
+            contacts.forEach(contact => {
+                const text = contact.textContent.toLowerCase();
+                contact.style.display = text.includes(q) ? '' : 'none';
+            });
+        }
+
+        async function openChatFromURL(tfid) {
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            activePeer = users.find(u => u.tfid === tfid);
+            
+            if (activePeer) {
+                document.getElementById('active-peer-name').innerText = `${activePeer.prenom} ${activePeer.nom}`;
+                document.getElementById('active-peer-tfid').innerText = activePeer.tfid;
+                fetchMessages();
+                lastViewed[activePeer.tfid] = Date.now();
+                localStorage.setItem('lastViewed', JSON.stringify(lastViewed));
+                if (chatInterval) clearInterval(chatInterval);
+                chatInterval = setInterval(fetchMessages, 3000);
+            }
+        }
+
+        async function fetchMessages() {
+            if (!activePeer) return;
+            const res = await fetch(`${API}/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user1_tfid: currentUser.tfid, user2_tfid: activePeer.tfid })
+            });
+            const messages = await res.json();
+            const container = document.getElementById('chat-messages');
+            container.innerHTML = "";
+            messages.forEach(m => {
+                const isMe = m.from === currentUser.tfid;
+                const div = document.createElement('div');
+                div.className = `message p-3 rounded-xl text-sm ${isMe ? 'bg-blue-600 text-white self-end rounded-tr-none' : 'bg-zinc-800 text-white self-start rounded-tl-none'}`;
+                div.innerText = m.text;
+                container.appendChild(div);
+            });
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('msg-input');
+            const text = input.value.trim();
+            if (!text || !activePeer) return;
+            input.value = "";
+            input.style.height = 'auto';
+            await fetch(`${API}/send`, { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sender_tfid: currentUser.tfid, receiver_tfid: activePeer.tfid, message: text }) 
+            });
+            fetchMessages();
+        }
+
+        function autoResize(el) {
+            el.style.height = 'auto';
+            el.style.height = el.scrollHeight + 'px';
+        }
+
+        function showMenu() {
+            document.getElementById('menu-modal').classList.remove('hidden');
+            document.getElementById('profile-name').innerText = `${currentUser.prenom} ${currentUser.nom}`;
+            document.getElementById('profile-dh7').innerText = currentUser.dh7;
+            document.getElementById('profile-tfid').innerText = currentUser.tfid;
+            document.getElementById('profile-initial').innerText = currentUser.nom[0];
+        }
+
+        function showLanguageSelector() {
+            document.getElementById('language-overlay').classList.remove('hidden');
+        }
+
+        function changeLanguage(lang) {
+            currentLanguage = lang;
+            localStorage.setItem('language', lang);
+            document.querySelectorAll('[data-key]').forEach(el => {
+                const key = el.dataset.key;
+                if (translations[lang][key]) {
+                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+                        el.placeholder = translations[lang][key];
+                    } else {
+                        el.innerText = translations[lang][key];
+                    }
+                }
+            });
+            document.getElementById('language-overlay').classList.add('hidden');
+        }
+
+        handleRoute();
+        changeLanguage(currentLanguage);
+        document.getElementById('msg-input').onkeypress = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+    </script>
+</body>
+</html>
