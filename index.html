@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>D'H7 | Digital Messenger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        body { 
+            background-color: #000000; 
+            color: #ffffff; 
+            font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
+            overflow: hidden;
+        }
+        .glass { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(20px); }
+        .hidden { display: none !important; }
+        
+        /* Stil Bulle Mesaj stil iOS */
+        .bubble-me {
+            background: #007AFF; /* Blue iMessage */
+            color: white;
+            border-radius: 20px 20px 2px 20px;
+        }
+        .bubble-them {
+            background: #262629;
+            color: #ffffff;
+            border-radius: 20px 20px 20px 2px;
+        }
+        
+        /* Scrollbar ki fennen */
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 10px; }
+        
+        input { background: #121212 !important; border: 1px solid #222 !important; }
+        .ios-input:focus { border-color: #007AFF !important; box-shadow: 0 0 0 1px #007AFF; }
+        
+        /* Tranzisyon */
+        .page-transition { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+
+    <div id="auth-section" class="flex-1 flex items-center justify-center p-6 bg-black z-[100]">
+        <div class="w-full max-w-sm text-center">
+            <h1 class="text-6xl font-extrabold tracking-tighter mb-2">D'H7</h1>
+            <p class="text-zinc-500 text-xs uppercase tracking-[0.4em] mb-12">Digital Messenger</p>
+            
+            <div id="login-form" class="space-y-3">
+                <input type="text" id="login-id" placeholder="TFID oswa DH7" class="ios-input w-full p-4 rounded-2xl outline-none transition text-white">
+                <input type="password" id="login-pass" placeholder="Modpas" class="ios-input w-full p-4 rounded-2xl outline-none transition text-white">
+                <button onclick="login()" class="w-full bg-white text-black font-bold py-4 rounded-2xl hover:opacity-90 transition mt-4">Konekte</button>
+                <button onclick="toggleAuth()" class="w-full text-sm text-zinc-500 py-4">Pako gen kont? <span class="text-white font-semibold">Kòmanse isit la</span></button>
+            </div>
+
+            <div id="register-form" class="hidden space-y-3">
+                <div class="flex gap-2">
+                    <input type="text" id="reg-nom" placeholder="Nom" class="w-1/2 p-4 rounded-2xl outline-none text-white">
+                    <input type="text" id="reg-prenom" placeholder="Prenom" class="w-1/2 p-4 rounded-2xl outline-none text-white">
+                </div>
+                <input type="text" id="reg-dh7" placeholder="Chwazi @dh7.tf" class="w-full p-4 rounded-2xl outline-none text-white">
+                <input type="password" id="reg-pass" placeholder="Kreye Modpas" class="w-full p-4 rounded-2xl outline-none text-white">
+                <button onclick="register()" class="w-full bg-[#007AFF] text-white font-bold py-4 rounded-2xl mt-4">Kreye Kont & Genere TFID</button>
+                <button onclick="toggleAuth()" class="w-full text-sm text-zinc-500 py-4">Gen kont deja? <span class="text-white">Login</span></button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-section" class="hidden flex-1 flex flex-col md:flex-row h-full">
+        
+        <div id="sidebar" class="w-full md:w-[400px] border-r border-zinc-900 flex flex-col bg-black">
+            <div class="p-6 pt-12">
+                <div class="flex justify-between items-end mb-6">
+                    <h2 class="text-4xl font-bold tracking-tight">Mesaj</h2>
+                    <div class="flex gap-5">
+                        <button onclick="goRoute('chèche')" class="text-white">
+                            <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        </button>
+                        <button onclick="goRoute('menu')" class="text-white">
+                            <svg class="w-7 h-7" fill="currentColor" viewBox="0 0 20 20"><path d="M6 10a2 2 0 11-4 0 2 2 0 014 0zM12 10a2 2 0 11-4 0 2 2 0 014 0zM18 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                        </button>
+                    </div>
+                </div>
+                <div onclick="goRoute('chèche')" class="w-full bg-zinc-900 rounded-xl p-3 flex items-center gap-3 text-zinc-500 cursor-pointer">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    <span class="text-sm">Chèche yon moun...</span>
+                </div>
+            </div>
+
+            <div id="contact-list" class="flex-1 overflow-y-auto custom-scroll">
+                </div>
+        </div>
+
+        <div id="chat-area" class="hidden md:flex flex-1 flex-col bg-black relative">
+            <div id="chat-header" class="h-20 border-b border-zinc-900 flex items-center justify-between px-6 glass z-10">
+                <div class="flex items-center gap-4">
+                    <button onclick="goRoute('')" class="md:hidden text-[#007AFF]">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    <div class="text-center md:text-left">
+                        <p id="active-peer-name" class="font-bold text-lg leading-tight">---</p>
+                        <p id="active-peer-tfid" class="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">---</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 flex flex-col space-y-2 custom-scroll pb-28">
+                </div>
+
+            <div class="absolute bottom-0 left-0 right-0 p-4 bg-black/80 backdrop-blur-xl">
+                <div class="max-w-3xl mx-auto flex items-end gap-3 bg-zinc-900 rounded-[24px] p-2 border border-zinc-800">
+                    <input type="text" id="msg-input" placeholder="iMessage" class="flex-1 bg-transparent !border-none p-3 outline-none text-white ml-2">
+                    <button onclick="sendMessage()" class="p-2 bg-[#007AFF] rounded-full hover:scale-105 transition active:scale-95">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="search-modal" class="hidden fixed inset-0 z-[200] bg-black p-6 flex flex-col page-transition">
+        <div class="flex items-center gap-4 mb-8">
+            <div class="flex-1 bg-zinc-900 rounded-2xl flex items-center px-4">
+                <svg class="w-5 h-5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                <input type="text" id="search-query" oninput="liveSearch()" placeholder="Chèche non oswa DH7" class="w-full bg-transparent border-none p-4 outline-none text-white">
+            </div>
+            <button onclick="goRoute('')" class="text-[#007AFF] font-semibold">Anile</button>
+        </div>
+        <div id="search-results" class="flex-1 overflow-y-auto space-y-4"></div>
+    </div>
+
+    <div id="menu-modal" class="hidden fixed inset-0 z-[200] bg-black p-8 flex flex-col items-center justify-center page-transition">
+        <div class="w-24 h-24 bg-gradient-to-tr from-zinc-800 to-zinc-700 rounded-full mb-6 flex items-center justify-center text-4xl font-bold border border-white/10" id="profile-initial">A</div>
+        <h3 id="profile-name" class="text-3xl font-bold mb-1 tracking-tight">---</h3>
+        <p id="profile-dh7" class="text-zinc-500 mb-12 tracking-widest text-sm">---</p>
+        
+        <div class="w-full max-w-sm space-y-3">
+            <div class="bg-zinc-900 p-5 rounded-3xl border border-zinc-800">
+                <p class="text-[10px] text-zinc-500 uppercase font-bold tracking-widest mb-1">TFID Pèsonèl</p>
+                <p id="profile-tfid" class="font-mono text-xl text-blue-400">---</p>
+            </div>
+            <button onclick="logout()" class="w-full text-red-500 font-bold py-5 rounded-3xl hover:bg-red-500/10 transition">Dekonekte</button>
+            <button onclick="goRoute('')" class="w-full text-zinc-400 py-5 font-medium">Fèmen</button>
+        </div>
+    </div>
+
+    <script>
+        const API = "https://dh7.adamdh7.org";
+        let currentUser = JSON.parse(localStorage.getItem('dh7_session')) || null;
+        let activePeer = null;
+        let chatInterval = null;
+
+        // --- SISTÈM ROUTING ---
+        function goRoute(path) {
+            window.history.pushState({}, '', '/' + path);
+            handleRoute();
+        }
+
+        window.onpopstate = handleRoute;
+
+        function handleRoute() {
+            const path = window.location.pathname.replace('/', '');
+            
+            // Netwaye UI
+            document.getElementById('search-modal').classList.add('hidden');
+            document.getElementById('menu-modal').classList.add('hidden');
+            
+            if (!currentUser) {
+                document.getElementById('auth-section').classList.remove('hidden');
+                document.getElementById('app-section').classList.add('hidden');
+                return;
+            }
+
+            document.getElementById('auth-section').classList.add('hidden');
+            document.getElementById('app-section').classList.remove('hidden');
+
+            if (path === 'chèche') {
+                document.getElementById('search-modal').classList.remove('hidden');
+                document.getElementById('search-query').focus();
+            } else if (path === 'menu') {
+                showMenu();
+            } else if (path.startsWith('TF-')) {
+                openChat(path);
+            } else {
+                // Akèy: Montre sèlman sidebar sou mobil
+                document.getElementById('chat-area').classList.add('hidden', 'md:flex');
+                loadRecentContacts();
+            }
+        }
+
+        // --- LOGIN & REGISTER ---
+        async function login() {
+            const identifier = document.getElementById('login-id').value;
+            const password = document.getElementById('login-pass').value;
+            const res = await fetch(`${API}/login`, {
+                method: 'POST',
+                body: JSON.stringify({ identifier, password })
+            });
+            const data = await res.json();
+            if(data.success) {
+                currentUser = data.user;
+                localStorage.setItem('dh7_session', JSON.stringify(data.user));
+                goRoute('');
+            } else { alert(data.error); }
+        }
+
+        async function register() {
+            const data = {
+                nom: document.getElementById('reg-nom').value,
+                prenom: document.getElementById('reg-prenom').value,
+                dh7: document.getElementById('reg-dh7').value,
+                password: document.getElementById('reg-pass').value,
+                age: 18 // Default
+            };
+            const res = await fetch(`${API}/register`, { method: 'POST', body: JSON.stringify(data) });
+            const result = await res.json();
+            if(result.success) {
+                alert("Kont kreye! TFID ou se: " + result.tfid);
+                toggleAuth();
+            } else { alert(result.error); }
+        }
+
+        function logout() {
+            localStorage.clear();
+            location.href = "/";
+        }
+
+        function toggleAuth() {
+            document.getElementById('login-form').classList.toggle('hidden');
+            document.getElementById('register-form').classList.toggle('hidden');
+        }
+
+        // --- LIS KONTAK (Sèlman sa ou pale deja) ---
+        async function loadRecentContacts() {
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            const container = document.getElementById('contact-list');
+            container.innerHTML = "";
+            
+            // Filtre: Isit la ou ka ajoute lojik pou rale sèlman kontak ki gen mesaj
+            // Pou kounye a, nou montre tout moun men ak UI SMS la
+            users.forEach(u => {
+                if(u.tfid === currentUser.tfid) return;
+                const div = document.createElement('div');
+                div.className = "p-5 flex items-center gap-4 cursor-pointer hover:bg-zinc-900 transition border-b border-zinc-900/50";
+                div.innerHTML = `
+                    <div class="w-14 h-14 bg-zinc-800 rounded-full flex items-center justify-center font-bold text-xl">${u.nom[0]}</div>
+                    <div class="flex-1">
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-lg">${u.prenom} ${u.nom}</span>
+                            <span class="text-[10px] text-zinc-600 font-mono">${u.tfid}</span>
+                        </div>
+                        <p class="text-sm text-zinc-500 truncate mt-1">Tape pou wè konvèsasyon an...</p>
+                    </div>
+                `;
+                div.onclick = () => goRoute(u.tfid);
+                container.appendChild(div);
+            });
+        }
+
+        // --- CHAT SYSTEM ---
+        async function openChat(tfid) {
+            document.getElementById('chat-area').classList.remove('hidden');
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            activePeer = users.find(u => u.tfid === tfid);
+            
+            if(activePeer) {
+                document.getElementById('active-peer-name').innerText = `${activePeer.prenom} ${activePeer.nom}`;
+                document.getElementById('active-peer-tfid').innerText = activePeer.tfid;
+                fetchMessages();
+                if(chatInterval) clearInterval(chatInterval);
+                chatInterval = setInterval(fetchMessages, 3000);
+            }
+        }
+
+        async function fetchMessages() {
+            if(!activePeer) return;
+            const res = await fetch(`${API}/messages`, {
+                method: 'POST',
+                body: JSON.stringify({ user1_tfid: currentUser.tfid, user2_tfid: activePeer.tfid })
+            });
+            const messages = await res.json();
+            const container = document.getElementById('chat-messages');
+            container.innerHTML = "";
+            messages.forEach(m => {
+                const isMe = m.from === currentUser.tfid;
+                const div = document.createElement('div');
+                div.className = `max-w-[75%] p-4 text-md shadow-sm ${isMe ? 'bubble-me self-end' : 'bubble-them self-start'}`;
+                div.innerText = m.text;
+                container.appendChild(div);
+            });
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('msg-input');
+            const text = input.value.trim();
+            if(!text || !activePeer) return;
+            input.value = "";
+            await fetch(`${API}/send`, { 
+                method: 'POST', 
+                body: JSON.stringify({ sender_tfid: currentUser.tfid, receiver_tfid: activePeer.tfid, message: text }) 
+            });
+            fetchMessages();
+        }
+
+        // --- SEARCH & PROFILE ---
+        async function liveSearch() {
+            const q = document.getElementById('search-query').value.toLowerCase();
+            if(q.length < 2) return;
+            const res = await fetch(`${API}/users`);
+            const users = await res.json();
+            const results = users.filter(u => (u.nom + u.prenom + u.dh7).toLowerCase().includes(q));
+            
+            const container = document.getElementById('search-results');
+            container.innerHTML = "";
+            results.forEach(u => {
+                if(u.tfid === currentUser.tfid) return;
+                const div = document.createElement('div');
+                div.className = "p-5 glass rounded-[24px] cursor-pointer flex items-center gap-4 hover:bg-zinc-800 transition border border-white/5";
+                div.innerHTML = `
+                    <div class="w-12 h-12 bg-zinc-700 rounded-full flex items-center justify-center font-bold">${u.nom[0]}</div>
+                    <div>
+                        <p class="font-bold text-lg">${u.prenom} ${u.nom}</p>
+                        <p class="text-xs text-zinc-500 font-mono tracking-widest">${u.dh7}</p>
+                    </div>
+                `;
+                div.onclick = () => goRoute(u.tfid);
+                container.appendChild(div);
+            });
+        }
+
+        function showMenu() {
+            document.getElementById('menu-modal').classList.remove('hidden');
+            document.getElementById('profile-name').innerText = `${currentUser.prenom} ${currentUser.nom}`;
+            document.getElementById('profile-dh7').innerText = currentUser.dh7;
+            document.getElementById('profile-tfid').innerText = currentUser.tfid;
+            document.getElementById('profile-initial').innerText = currentUser.nom[0];
+        }
+
+        // Kòmanse sistèm nan
+        handleRoute();
+        document.getElementById('msg-input').onkeypress = (e) => { if(e.key === 'Enter') sendMessage(); };
+    </script>
+</body>
+</html>
